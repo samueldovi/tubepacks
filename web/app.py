@@ -69,13 +69,14 @@ DEFAULTS = {
     "signups": 1,           # 0 ferme les inscriptions
 }
 
-# (clé, nom, vues min, poids de tirage, valeur de recyclage en pièces)
+# (clé, nom, vues min, poids de tirage en %, valeur de recyclage en pièces)
+# Une mythique tombe une fois sur mille cartes, soit environ un pack sur deux cents.
 TIERS = [
-    ("M", "Mythique", 100_000_000, 1.5, 1500),
-    ("L", "Légendaire", 10_000_000, 5, 400),
-    ("E", "Épique", 1_000_000, 12, 100),
-    ("R", "Rare", 100_000, 24, 25),
-    ("C", "Commune", 0, 57.5, 5),
+    ("M", "Mythique", 100_000_000, 0.1, 6000),
+    ("L", "Légendaire", 10_000_000, 0.9, 1200),
+    ("E", "Épique", 1_000_000, 4, 200),
+    ("R", "Rare", 100_000, 16, 30),
+    ("C", "Commune", 0, 79, 5),
 ]
 TIER_VALUE = {k: v for k, _, _, _, v in TIERS}
 DURATIONS = {"15m": 900, "1h": 3600, "6h": 21600, "24h": 86400}
@@ -145,7 +146,7 @@ async def invite_code() -> str:
 
 # ---------- Utilitaires ----------
 def tier_bounds(min_views):
-    """Paliers disponibles pour un seuil : [(clé, nom, bas, haut|None, poids)]."""
+    """Paliers jouables pour un seuil : [(clé, nom, bas, haut|None, poids)]."""
     out, upper = [], None
     for k, name, tmin, w, _ in TIERS:
         lo = max(tmin, min_views)
@@ -153,6 +154,9 @@ def tier_bounds(min_views):
             out.append((k, name, lo, upper, w))
         upper = tmin
     return out
+
+
+TIER_RANGES = tier_bounds(MIN_VIEWS)
 
 
 def score_range(lo, hi):
@@ -447,19 +451,14 @@ async def me(user=Depends(current_user)):
 
 
 # ---------- Packs ----------
-class PackRequest(BaseModel):
-    min_views: int = MIN_VIEWS
-
-
 @app.post("/api/packs/open", dependencies=[Depends(require_json)])
-async def open_pack(body: PackRequest, user=Depends(current_user)):
+async def open_pack(user=Depends(current_user)):
     if not await r.set(f"rl:pack:{user}", 1, px=700, nx=True):
         raise HTTPException(429, "Doucement, un pack à la fois.")
     cfg = await settings()
-    min_views = max(MIN_VIEWS, body.min_views)
 
     avail = []
-    for k, name, lo, hi, w in tier_bounds(min_views):
+    for k, name, lo, hi, w in TIER_RANGES:
         n = await r.zcount("videos:by_views", *score_range(lo, hi))
         if n:
             avail.append((k, lo, hi, w, n))
@@ -513,21 +512,19 @@ async def buy_pack(user=Depends(current_user)):
 
 # ---------- Collection ----------
 @app.get("/api/collection")
-async def collection(min_views: int = MIN_VIEWS, user=Depends(current_user)):
-    min_views = max(MIN_VIEWS, min_views)
+async def collection(user=Depends(current_user)):
     owned = await r.hgetall(f"coll:{user}")
     cards_by_id = await cards_for(list(owned))
 
     cards = []
     for vid, count in owned.items():
         c = cards_by_id.get(vid)
-        if c and c["views"] >= min_views:
-            c = dict(c, count=int(count), value=TIER_VALUE[c["tier"]])
-            cards.append(c)
+        if c:
+            cards.append(dict(c, count=int(count), value=TIER_VALUE[c["tier"]]))
     cards.sort(key=lambda c: c["views"], reverse=True)
 
     tiers = []
-    for k, name, lo, hi, w in tier_bounds(min_views):
+    for k, name, lo, hi, w in TIER_RANGES:
         total = await r.zcount("videos:by_views", *score_range(lo, hi))
         tiers.append({"key": k, "name": name, "total": total, "owned": sum(c["tier"] == k for c in cards)})
     dupes = sum(c["count"] - 1 for c in cards)
@@ -808,6 +805,8 @@ async def admin_overview():
         "sources": await r.zcard("sources"), "packs": packs, "coins": coins,
         "live_auctions": len(live), "escrow": escrow, "done_auctions": await r.zcard("auctions:done"),
         "heartbeat": await r.get("worker:heartbeat"), "worker_status": await r.get("worker:status"),
+        "worker_stats": await r.hgetall("worker:stats"),
+        "channels": await r.zcard("channels"), "queued": await r.scard("queue:related"),
         "settings": await settings(), "invite": await invite_code(),
     }
 

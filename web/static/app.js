@@ -12,7 +12,7 @@ const DOT = {M:"--m", L:"--l", E:"--e", R:"--r", C:"--c"};
 
 let META = {min_views:10000, tiers:[], pack_interval:600, pack_max:12, pack_price:250, fee:5, bid_step:5, avatars:["🎴"], durations:["1h"]};
 let ME = null, TIERS = [];
-let view = "packs", minLog = 4;
+let view = "packs";
 let coll = {cards:[], tiers:[], dupes:0, scrap:0}, collFilter = "all", collShown = 60;
 let marketMode = "all", marketTier = "all", marketItems = [], mine = null;
 let adminTab = "overview", adminData = {};
@@ -24,7 +24,6 @@ const nf = n => Number(n || 0).toLocaleString("fr-FR");
 const fmt = n => n >= 1e9 ? (n/1e9).toLocaleString("fr-FR",{maximumFractionDigits:1})+" Md"
   : n >= 1e6 ? (n/1e6).toLocaleString("fr-FR",{maximumFractionDigits:1})+" M"
   : n >= 1e3 ? Math.round(n/1e3).toLocaleString("fr-FR")+" k" : String(n || 0);
-const minViews = () => Math.max(META.min_views, Math.round(Math.pow(10, minLog)));
 const tierName = k => (TIERS.find(t => t.key === k) || {}).name || k;
 const tierValue = k => (TIERS.find(t => t.key === k) || {}).value || 0;
 
@@ -216,7 +215,7 @@ async function openPack() {
   btn.disabled = true; btn.classList.add("tearing");
   let data;
   try {
-    [data] = await Promise.all([api("/api/packs/open", {min_views: minViews()}), new Promise(r => setTimeout(r, 520))]);
+    [data] = await Promise.all([api("/api/packs/open", {}), new Promise(r => setTimeout(r, 520))]);
   } catch (e) { fail(e); loadMe().then(renderPackTable); return; }
 
   if (ME) { ME.coins = data.coins; ME.tickets = data.tickets; ME.next_pack = data.next_pack; ME.packs += 1; renderWallet(); }
@@ -260,23 +259,10 @@ $("#buyPack").onclick = async () => {
   } catch (e) { fail(e); }
 };
 
-function syncSlider() {
-  $("#minViews").value = minLog;
-  $("#minOut").textContent = nf(minViews());
-}
-let collTimer;
-$("#minViews").addEventListener("input", e => {
-  minLog = parseFloat(e.target.value);
-  try { localStorage.setItem("tp:minLog", minLog); } catch (err) {}
-  syncSlider();
-  clearTimeout(collTimer);
-  collTimer = setTimeout(loadColl, 300);
-});
-
 /* ================= COLLECTION ================= */
 async function loadColl() {
   try {
-    coll = await api("/api/collection?min_views=" + minViews());
+    coll = await api("/api/collection");
     renderColl();
   } catch (e) { fail(e); }
 }
@@ -671,16 +657,18 @@ function adminOverview() {
         <div class="stat"><b style="color:var(--gold)">${nf(o.coins)}</b><span>pièces en circulation</span></div>
         <div class="stat"><b>${nf(o.escrow)}</b><span>pièces bloquées</span></div>
         <div class="stat"><b>${nf(o.live_auctions)}</b><span>enchères en cours</span></div>
-        <div class="stat"><b>${nf(o.sources)}</b><span>sources du worker</span></div>
+        <div class="stat"><b>${nf(o.channels)}</b><span>chaînes suivies</span></div>
       </div>
     </div>
     <div class="grid-2" style="margin-top:16px">
       <div class="panel">
         <h2>Worker</h2>
-        <p class="sub">Dernier passage : <b>${o.heartbeat ? ago(Number(o.heartbeat)) : "jamais"}</b><br>
-          État : <b>${esc(o.worker_status || "inconnu")}</b></p>
-        <p class="note">Le worker explore les sources en continu ; une pause anti-blocage apparaît ici
-          quand YouTube refuse les requêtes.</p>
+        <p class="sub">Dernier passage : <b>${o.heartbeat ? ago(Number(o.heartbeat)) : "jamais"}</b> ·
+          état : <b>${esc(o.worker_status || "inconnu")}</b></p>
+        ${workerStatsHTML(o)}
+        <p class="note" style="margin-top:10px">Le worker moissonne les tendances, les recherches et les flux RSS
+          des chaînes validées. « À enrichir » sont des cartes déjà jouables dont la catégorie et les j'aime
+          arrivent au fil des cycles ; la file se vide d'elle-même.</p>
       </div>
       <div class="panel">
         <h2>Administrateurs</h2>
@@ -701,6 +689,21 @@ function adminOverview() {
         catch (e) { btn.disabled = false; fail(e); }
       }}],
   });
+}
+
+function workerStatsHTML(o) {
+  const w = o.worker_stats || {};
+  if (!w.cycle) return `<p class="note">Aucun cycle terminé pour l'instant.</p>`;
+  const rows = [
+    ["Cycle", nf(w.cycle)], ["Ajoutées au dernier cycle", nf(w.added)],
+    ["Durée du cycle", (w.seconds || 0) + " s"], ["Instances disponibles", nf(w.instances)],
+    ["Chaînes suivies", nf(w.channels)], ["Recommandations en file", nf(o.queued)],
+    ["Cartes à enrichir", nf(w.to_enrich)], ["Écartées : trop peu vues", nf(w.low_views)],
+    ["Écartées : pas en français", nf(w.foreign)],
+    ["Requêtes API réussies / échouées", nf(w.api_ok) + " / " + nf(w.api_fail)],
+  ];
+  return `<div class="stats">${rows.map(([k, v]) =>
+    `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("")}</div>`;
 }
 
 function adminUsers() {
@@ -872,7 +875,6 @@ async function loadMeta() {
   try {
     META = await api("/api/meta");
     TIERS = META.tiers;
-    syncSlider();
     $("#heroInterval").textContent = clock(META.pack_interval);
     $("#heroMax").textContent = META.pack_max;
     $("#packPrice").textContent = nf(META.pack_price);
@@ -883,13 +885,11 @@ async function loadMeta() {
     const w = TIERS.reduce((s, t) => s + t.weight, 0);
     $("#odds").innerHTML = TIERS.slice().reverse().map(t =>
       `<span style="--dot:var(${DOT[t.key]})">${esc(t.name)} (${fmt(Math.max(t.min, META.min_views))}+) :
-        ${(t.weight/w*100).toLocaleString("fr-FR",{maximumFractionDigits:1})} % · recyclage ${nf(t.value)} 🪙</span>`).join("");
+        ${(t.weight/w*100).toLocaleString("fr-FR",{maximumFractionDigits:2})} % · recyclage ${nf(t.value)} 🪙</span>`).join("");
   } catch (e) { fail(e); }
 }
 
 (async function start() {
-  try { const v = parseFloat(localStorage.getItem("tp:minLog")); if (v >= 4 && v <= 8.5) minLog = v; } catch (e) {}
-  syncSlider();
   await loadMeta();
   await loadMe();
   let start = "packs";
