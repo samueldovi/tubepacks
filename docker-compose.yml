@@ -1,0 +1,49 @@
+services:
+  web:
+    build: ./web
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD manquant}
+      INVITE_CODE: ${INVITE_CODE:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      MIN_VIEWS: ${MIN_VIEWS:-10000}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD manquant}
+      MIN_VIEWS: ${MIN_VIEWS:-10000}
+      PER_SOURCE: ${PER_SOURCE:-30}
+      PAUSE: ${PAUSE:-2}
+      CYCLE_PAUSE: ${CYCLE_PAUSE:-60}
+      REFRESH_DAYS: ${REFRESH_DAYS:-7}
+      DISCOVER: ${DISCOVER:-1}
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD manquant}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

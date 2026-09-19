@@ -1,0 +1,11 @@
+# Sources initiales (une par ligne) : onglet vidéos d'une chaîne, playlist ou recherche ytsearchN:mots.
+# Ajoutées une seule fois dans Redis au démarrage ; le worker découvre ensuite d'autres chaînes seul.
+# Vérifie les @handles : une source invalide est simplement ignorée dans les logs.
+https://www.youtube.com/@Squeezie/videos
+https://www.youtube.com/@ScienceEtonnante/videos
+https://www.youtube.com/@HugoDecrypte/videos
+https://www.youtube.com/@Micode/videos
+https://www.youtube.com/@NotaBeneMovies/videos
+https://www.youtube.com/@DirtyBiology/videos
+ytsearch40:clip rap français
+ytsearch40:vulgarisation scientifique français
