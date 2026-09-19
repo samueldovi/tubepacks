@@ -915,7 +915,11 @@ function miniHTML(v, qty, label) {
 // Toucher une carte (n'importe où, sauf dans une fenêtre ou un sélecteur) ouvre sa fiche.
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-vid]");
-  if (!el || el.closest("dialog") || el.closest(".picker")) return;
+  if (!el) return;
+  // Le chemin du clic est figé au moment du geste : il reste juste même si la carte touchée
+  // a été retirée de la page entre-temps (un sélecteur qui se redessine, par exemple).
+  const path = e.composedPath();
+  if (path.some(n => n.tagName === "DIALOG" || (n.classList && n.classList.contains("picker")))) return;
   const slot = el.closest(".slot");
   if (slot && !slot.classList.contains("flipped")) return;      // d'abord retourner la carte
   e.preventDefault();
@@ -1211,8 +1215,11 @@ async function tradeBuilder(init) {
       tu demandes <b>${n(st.want)}</b> carte(s)${Number($("#tcWant").value) ? ` + ${nf($("#tcWant").value)} 🪙` : ""}.`;
   };
   const draw = () => {
+    // On garde la position de défilement : sinon chaque sélection renvoie en haut de la liste.
+    const keep = [$("#pkGive").scrollTop, $("#pkWant").scrollTop];
     $("#pkGive").innerHTML = pickHTML(coll.cards, st.give, ($("#qGive").value || "").toLowerCase());
     $("#pkWant").innerHTML = pickHTML(st.theirs, st.want, ($("#qWant").value || "").toLowerCase());
+    [$("#pkGive").scrollTop, $("#pkWant").scrollTop] = keep;
     $("#tSum").innerHTML = summary();
   };
   const bump = (sel, cards, vid) => {
@@ -1242,8 +1249,14 @@ async function tradeBuilder(init) {
       <div class="tsummary" id="tSum"></div>`,
     onOpen: () => {
       draw();
-      $("#pkGive").onclick = e => { const m = e.target.closest("[data-vid]"); if (m) bump(st.give, coll.cards, m.dataset.vid); };
-      $("#pkWant").onclick = e => { const m = e.target.closest("[data-vid]"); if (m) bump(st.want, st.theirs, m.dataset.vid); };
+      const pick = (sel, cards) => e => {
+        const m = e.target.closest("[data-vid]");
+        if (!m) return;
+        e.stopPropagation();      // un clic ici sélectionne, il n'ouvre pas la fiche de la carte
+        bump(sel, cards, m.dataset.vid);
+      };
+      $("#pkGive").onclick = pick(st.give, coll.cards);
+      $("#pkWant").onclick = e => pick(st.want, st.theirs)(e);   // st.theirs change si l'on change d'ami
       ["qGive", "qWant", "tcGive", "tcWant"].forEach(id => $("#" + id).oninput = draw);
       $("#tTo").onchange = async () => { st.to = $("#tTo").value; st.want = {}; await loadTheirs(); draw(); };
     },
