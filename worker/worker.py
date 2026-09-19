@@ -395,6 +395,8 @@ def reject(vid, reason, days):
 
 def store(vid, d):
     """Écrit la carte. Sans catégorie connue, la vidéo part en file d'enrichissement."""
+    if r.sismember("blacklist", vid):   # retirée par un administrateur : on n'y touche plus
+        return
     views = d["views"]
     genre = d.get("genre") or ""
     now = int(time.time())

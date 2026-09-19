@@ -271,3 +271,111 @@ local xp = redis.call('HINCRBY', g, 'xp', n)
 redis.call('ZADD', 'guilds', xp, gid)
 return {xp}
 """
+
+# ---------- Échanges ----------
+# ARGV : from, to, pièces données, pièces demandées, id, maintenant,
+#        n cartes données, (vid, n)…, n cartes demandées, (vid, n)…
+# Tout est revérifié au moment de l'acceptation : rien n'est bloqué pendant l'attente.
+# -> {'OK'} | {'CLOSED'} | {'MISSING_GIVE', vid} | {'MISSING_WANT', vid} | {'FUNDS_GIVE'} | {'FUNDS_WANT'}
+TRADE_EXEC = """
+local from, to = ARGV[1], ARGV[2]
+local cg, cw, tid, now = tonumber(ARGV[3]), tonumber(ARGV[4]), ARGV[5], ARGV[6]
+local t = 'trade:' .. tid
+if redis.call('HGET', t, 'status') ~= 'pending' then return {'CLOSED'} end
+local i = 7
+local function read()
+  local n, out = tonumber(ARGV[i]), {}
+  i = i + 1
+  for k = 1, n do out[k] = {ARGV[i], tonumber(ARGV[i + 1])}; i = i + 2 end
+  return out
+end
+local give, want = read(), read()
+local cf, ct = 'coll:' .. from, 'coll:' .. to
+for _, it in ipairs(give) do
+  if tonumber(redis.call('HGET', cf, it[1]) or '0') < it[2] then return {'MISSING_GIVE', it[1]} end
+end
+for _, it in ipairs(want) do
+  if tonumber(redis.call('HGET', ct, it[1]) or '0') < it[2] then return {'MISSING_WANT', it[1]} end
+end
+if tonumber(redis.call('HGET', 'user:' .. from, 'coins') or '0') < cg then return {'FUNDS_GIVE'} end
+if tonumber(redis.call('HGET', 'user:' .. to, 'coins') or '0') < cw then return {'FUNDS_WANT'} end
+local function move(src, dst, vid, n)
+  if redis.call('HINCRBY', src, vid, -n) <= 0 then redis.call('HDEL', src, vid) end
+  redis.call('HINCRBY', dst, vid, n)
+end
+for _, it in ipairs(give) do move(cf, ct, it[1], it[2]) end
+for _, it in ipairs(want) do move(ct, cf, it[1], it[2]) end
+if cg > 0 then
+  redis.call('HINCRBY', 'user:' .. from, 'coins', -cg)
+  redis.call('HINCRBY', 'user:' .. to, 'coins', cg)
+end
+if cw > 0 then
+  redis.call('HINCRBY', 'user:' .. to, 'coins', -cw)
+  redis.call('HINCRBY', 'user:' .. from, 'coins', cw)
+end
+redis.call('HSET', t, 'status', 'accepted', 'closed', now)
+redis.call('ZREM', 'trades:pending', tid)
+return {'OK'}
+"""
+
+# Refus, annulation ou expiration d'un échange (aucun séquestre à rendre). -> {'OK'} | {'CLOSED'}
+TRADE_CLOSE = """
+if redis.call('HGET', KEYS[1], 'status') ~= 'pending' then return {'CLOSED'} end
+redis.call('HSET', KEYS[1], 'status', ARGV[1], 'closed', ARGV[2])
+redis.call('ZREM', 'trades:pending', ARGV[3])
+return {'OK'}
+"""
+
+# ---------- Duels ----------
+# Lance un défi : la mise du challenger est mise sous séquestre. -> {'OK'} | {'FUNDS'}
+DUEL_CREATE = """
+local u, d = KEYS[1], KEYS[2]
+local stake = tonumber(ARGV[1])
+if tonumber(redis.call('HGET', u, 'coins') or '0') < stake then return {'FUNDS'} end
+if stake > 0 then redis.call('HINCRBY', u, 'coins', -stake) end
+redis.call('HSET', d, 'id', ARGV[2], 'from', ARGV[3], 'to', ARGV[4], 'stake', stake,
+           'status', 'pending', 'created', ARGV[5], 'expires', ARGV[6])
+redis.call('ZADD', 'duels:pending', ARGV[6], ARGV[2])
+return {'OK'}
+"""
+
+# Accepte et règle le duel d'un bloc : mise de l'adversaire, gain, statistiques.
+# Le vainqueur est tiré par le serveur juste avant. -> {'OK', vainqueur} | {'CLOSED'} | {'FUNDS'}
+DUEL_RESOLVE = """
+local d = KEYS[1]
+if redis.call('HGET', d, 'status') ~= 'pending' then return {'CLOSED'} end
+local from, to = redis.call('HGET', d, 'from'), redis.call('HGET', d, 'to')
+local stake = tonumber(redis.call('HGET', d, 'stake') or '0')
+if tonumber(redis.call('HGET', 'user:' .. to, 'coins') or '0') < stake then return {'FUNDS'} end
+if stake > 0 then redis.call('HINCRBY', 'user:' .. to, 'coins', -stake) end
+local winner = ARGV[1]
+local loser = to
+if winner == to then loser = from end
+if stake > 0 then redis.call('HINCRBY', 'user:' .. winner, 'coins', 2 * stake) end
+redis.call('HINCRBY', 'user:' .. winner, 'duels_won', 1)
+redis.call('HINCRBY', 'user:' .. loser, 'duels_lost', 1)
+redis.call('HSET', d, 'status', 'done', 'winner', winner, 'result', ARGV[2], 'closed', ARGV[3])
+redis.call('ZREM', 'duels:pending', redis.call('HGET', d, 'id'))
+return {'OK', winner}
+"""
+
+# Refus, annulation ou expiration d'un défi : la mise revient au challenger. -> {'OK'} | {'CLOSED'}
+DUEL_CANCEL = """
+local d = KEYS[1]
+if redis.call('HGET', d, 'status') ~= 'pending' then return {'CLOSED'} end
+local stake = tonumber(redis.call('HGET', d, 'stake') or '0')
+if stake > 0 then redis.call('HINCRBY', 'user:' .. redis.call('HGET', d, 'from'), 'coins', stake) end
+redis.call('HSET', d, 'status', ARGV[1], 'closed', ARGV[2])
+redis.call('ZREM', 'duels:pending', redis.call('HGET', d, 'id'))
+return {'OK'}
+"""
+
+# ---------- Liste noire ----------
+# Retire une carte d'une collection et rembourse sa valeur de recyclage. -> {exemplaires retirés}
+REMOVE_CARD = """
+local n = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+if n <= 0 then return {0} end
+redis.call('HDEL', KEYS[1], ARGV[1])
+redis.call('HINCRBY', KEYS[2], 'coins', n * tonumber(ARGV[2]))
+return {n}
+"""

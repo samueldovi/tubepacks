@@ -2,7 +2,9 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover : en app installée sur iPhone, la page passe sous la barre d'état ;
+     les marges env(safe-area-inset-*) du CSS gardent le contenu hors de l'encoche. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TubePacks</title>
 <meta name="theme-color" content="#14162F">
 <meta name="description" content="Ouvre des packs, collectionne les vidéos YouTube françaises et revends tes doublons aux enchères.">
@@ -20,30 +22,38 @@
 </head>
 <body>
 
-<div class="topbar">
+<header class="topbar">
   <div class="topin">
-    <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>TubePacks</a>
-    <nav class="tabs" id="nav" aria-label="Sections">
-      <button data-view="packs" aria-current="true">🎁 Packs</button>
-      <button data-view="coll">🗂️ Collection</button>
-      <button data-view="market">⚖️ Enchères</button>
-      <button data-view="guild">🛡️ Guilde</button>
-      <button data-view="profile">👤 Profil</button>
-      <button data-view="admin" hidden>🛠️ Admin</button>
+    <a class="brand" href="/" aria-label="TubePacks, accueil"><span class="mark" aria-hidden="true"><i></i></span><span class="bname">TubePacks</span></a>
+    <!-- Navigation principale (bureau). Sur téléphone, c'est la barre d'onglets du bas. -->
+    <nav class="tabs" aria-label="Sections">
+      <button data-group="packs">🎁 Packs</button>
+      <button data-group="cards">🗂️ Cartes</button>
+      <button data-group="market">⚖️ Marché</button>
+      <button data-group="social">👥 Social<i class="ndot" hidden></i></button>
+      <button data-group="profile">👤 Profil</button>
+      <button data-group="admin" hidden>🛠️ Admin<i class="ndot" hidden></i></button>
     </nav>
     <div class="wallet">
       <span class="pill coins" title="Pièces"><span aria-hidden="true">🪙</span><span id="wCoins">0</span></span>
       <span class="pill tick" title="Packs disponibles"><span aria-hidden="true">🎁</span><span id="wPacks">0</span><small id="wTimer"></small></span>
       <button class="iconbtn" id="bell" aria-label="Notifications">🔔<span class="dot" id="bellDot" hidden>0</span></button>
-      <a class="iconbtn kofi" id="kofi" href="https://ko-fi.com/eirblast" target="_blank" rel="noopener"
-         aria-label="Soutenir TubePacks sur Ko-fi" title="Soutenir TubePacks sur Ko-fi">☕</a>
-      <button class="iconbtn" id="themeBtn" aria-label="Changer de thème">🌗</button>
-      <button class="iconbtn" id="logout" aria-label="Se déconnecter">⏻</button>
+      <button class="iconbtn" id="menuBtn" aria-label="Menu" aria-expanded="false" aria-controls="menu">☰</button>
     </div>
   </div>
+</header>
+
+<!-- Menu : réglages et liens secondaires, pour garder la barre du haut sur une ligne. -->
+<div class="menu" id="menu" hidden>
+  <button class="mitem" id="themeBtn"><span aria-hidden="true">🌗</span> Changer de thème</button>
+  <button class="mitem" id="installMenu" hidden><span aria-hidden="true">📲</span> Installer l'application</button>
+  <a class="mitem kofi" id="kofi" href="https://ko-fi.com/eirblast" target="_blank" rel="noopener"><span aria-hidden="true">☕</span> Soutenir sur Ko-fi</a>
+  <button class="mitem" data-go="admin" id="adminMenu" hidden><span aria-hidden="true">🛠️</span> Administration</button>
+  <button class="mitem danger" id="logout"><span aria-hidden="true">⏻</span> Se déconnecter</button>
 </div>
 
 <div class="wrap">
+  <div class="subnav" id="subnav" hidden></div>
 
   <!-- ====== PACKS ====== -->
   <section id="view-packs">
@@ -53,79 +63,93 @@
         <p>Un pack gratuit toutes les <b id="heroInterval">10 minutes</b>, jusqu'à <b id="heroMax">12</b> en réserve.
            Plus une vidéo a de vues, plus sa carte est rare.</p>
       </div>
-      <div class="stats" style="min-width:260px">
+      <div class="stats herostats">
         <div class="stat"><b id="sPacks">0</b><span>packs ouverts</span></div>
         <div class="stat"><b id="sOwned">0</b><span>cartes uniques</span></div>
-        <div class="stat"><b id="sPct">0 %</b><span>du deck</span></div>
+        <div class="stat"><b id="sPct">0 %</b><span>du catalogue</span></div>
       </div>
     </div>
-
-    <div class="panel row" style="margin-bottom:16px">
+    <div class="toolbar">
       <span class="note" id="poolInfo"></span>
       <span class="spacer"></span>
       <button class="btn small" id="buyPack">Acheter un pack · <span id="packPrice">250</span> 🪙</button>
     </div>
-
     <div class="table" id="table"></div>
     <div class="odds" id="odds"></div>
-    <p class="note" style="margin-top:14px" id="crawlInfo"></p>
+    <p class="note center" style="margin-top:14px" id="crawlInfo"></p>
   </section>
 
   <!-- ====== COLLECTION ====== -->
   <section id="view-coll" hidden>
-    <div class="hero">
-      <div><h1>Ma collection</h1><p id="collSummary">…</p></div>
-    </div>
-    <div class="panel row" style="margin-bottom:16px">
-      <div class="chips" id="collFilters"></div>
-      <span class="spacer"></span>
-      <input type="search" id="collSearch" placeholder="Titre ou chaîne…" style="width:min(220px,50vw)">
-      <select id="collSort" style="width:auto">
+    <div class="phead"><h1>Ma collection</h1><p id="collSummary">…</p></div>
+    <div class="chiprow" id="collFilters"></div>
+    <div class="toolbar">
+      <input type="search" id="collSearch" placeholder="Titre ou chaîne…" aria-label="Rechercher">
+      <select id="collSort" aria-label="Trier">
         <option value="views">Plus de vues</option>
         <option value="viewsAsc">Moins de vues</option>
         <option value="title">Titre A→Z</option>
         <option value="count">Exemplaires</option>
       </select>
-      <label class="chip" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="checkbox" id="onlyDupes" style="width:auto"> Doublons
-      </label>
+      <label class="toggle"><input type="checkbox" id="onlyDupes"> Doublons</label>
     </div>
+    <p class="note hintline">Touche une carte pour la vendre, la recycler, l'échanger ou la mettre en vitrine.</p>
     <div class="cgrid" id="cgrid"></div>
-    <div class="row" style="justify-content:center;margin-top:16px" id="more"></div>
+    <div class="row center" style="margin-top:16px" id="more"></div>
+  </section>
+
+  <!-- ====== EXPLORATEUR ====== -->
+  <section id="view-explore" hidden>
+    <div class="phead"><h1>Explorateur</h1><p id="exSummary">Toutes les cartes du jeu.</p></div>
+    <div class="chiprow" id="exTiers"></div>
+    <div class="toolbar">
+      <input type="search" id="exSearch" placeholder="Titre ou chaîne…" aria-label="Rechercher">
+      <select id="exSort" aria-label="Trier">
+        <option value="views">Plus de vues</option>
+        <option value="views_asc">Moins de vues</option>
+        <option value="title">Titre A→Z</option>
+        <option value="channel">Chaîne A→Z</option>
+      </select>
+      <select id="exOwned" aria-label="Filtrer">
+        <option value="all">Toutes</option>
+        <option value="mine">Possédées</option>
+        <option value="missing">Manquantes</option>
+      </select>
+    </div>
+    <div class="cgrid" id="exGrid"></div>
+    <div class="pager" id="exPager"></div>
   </section>
 
   <!-- ====== ENCHÈRES ====== -->
   <section id="view-market" hidden>
-    <div class="hero">
-      <div><h1>Hôtel des ventes</h1><p id="marketSub">Mets tes doublons aux enchères, rafle les cartes qui te manquent.</p></div>
+    <div class="phead"><h1>Hôtel des ventes</h1><p id="marketSub">Mets tes doublons aux enchères, rafle les cartes qui te manquent.</p></div>
+    <div class="segmented scroll" id="marketTabs">
+      <button data-m="all" aria-pressed="true">Toutes</button>
+      <button data-m="selling">Mes ventes</button>
+      <button data-m="bidding">Mes mises</button>
+      <button data-m="history">Historique</button>
     </div>
-    <div class="row" style="margin-bottom:14px">
-      <div class="segmented" id="marketTabs">
-        <button data-m="all" aria-pressed="true">Toutes les ventes</button>
-        <button data-m="selling">Mes ventes</button>
-        <button data-m="bidding">Mes mises</button>
-        <button data-m="history">Historique</button>
+    <div id="marketFilters">
+      <div class="chiprow" id="marketTiers"></div>
+      <div class="toolbar">
+        <input type="search" id="marketSearch" placeholder="Titre ou chaîne…" aria-label="Rechercher">
+        <select id="marketSort" aria-label="Trier">
+          <option value="ending">Fin imminente</option>
+          <option value="recent">Plus récentes</option>
+          <option value="cheap">Prix croissant</option>
+          <option value="rich">Prix décroissant</option>
+          <option value="views">Plus de vues</option>
+        </select>
       </div>
-    </div>
-    <div class="panel row" id="marketFilters" style="margin-bottom:16px">
-      <div class="chips" id="marketTiers"></div>
-      <span class="spacer"></span>
-      <input type="search" id="marketSearch" placeholder="Titre ou chaîne…" style="width:min(220px,50vw)">
-      <select id="marketSort" style="width:auto">
-        <option value="ending">Fin imminente</option>
-        <option value="recent">Plus récentes</option>
-        <option value="cheap">Prix croissant</option>
-        <option value="rich">Prix décroissant</option>
-        <option value="views">Plus de vues</option>
-      </select>
     </div>
     <div class="agrid" id="agrid"></div>
   </section>
 
-  <!-- ====== GUILDE ====== -->
-  <section id="view-guild" hidden>
-    <div id="guildBody"></div>
-  </section>
+  <!-- ====== SOCIAL ====== -->
+  <section id="view-friends" hidden><div id="friendsBody"></div></section>
+  <section id="view-trades" hidden><div id="tradesBody"></div></section>
+  <section id="view-duels" hidden><div id="duelsBody"></div></section>
+  <section id="view-guild" hidden><div id="guildBody"></div></section>
 
   <!-- ====== PROFIL ====== -->
   <section id="view-profile" hidden>
@@ -134,21 +158,36 @@
 
   <!-- ====== ADMIN ====== -->
   <section id="view-admin" hidden>
-    <div class="hero"><div><h1>Administration</h1><p>Réservé aux administrateurs : joueurs, économie, sources du worker et enchères.</p></div></div>
-    <div class="row" style="margin-bottom:14px">
-      <div class="segmented" id="adminTabs">
-        <button data-a="overview" aria-pressed="true">Vue d'ensemble</button>
-        <button data-a="users">Joueurs</button>
-        <button data-a="settings">Réglages</button>
-        <button data-a="sources">Sources</button>
-        <button data-a="auctions">Enchères</button>
-        <button data-a="guilds">Guildes</button>
-      </div>
+    <div class="phead"><h1>Administration</h1><p>Joueurs, économie, signalements, sources du worker.</p></div>
+    <div class="segmented scroll" id="adminTabs">
+      <button data-a="overview" aria-pressed="true">Vue d'ensemble</button>
+      <button data-a="reports">Signalements<i class="ndot" id="reportsDot" hidden></i></button>
+      <button data-a="blacklist">Liste noire</button>
+      <button data-a="users">Joueurs</button>
+      <button data-a="settings">Réglages</button>
+      <button data-a="sources">Sources</button>
+      <button data-a="auctions">Enchères</button>
+      <button data-a="guilds">Guildes</button>
     </div>
     <div id="adminBody"></div>
   </section>
 
+  <footer class="pagefoot">
+    <a href="https://ko-fi.com/eirblast" target="_blank" rel="noopener" class="kofibtn">
+      <span aria-hidden="true">☕</span> Soutenir TubePacks sur Ko-fi
+    </a>
+    <p class="note">TubePacks est gratuit et sans publicité. Un café aide à payer le serveur.</p>
+  </footer>
 </div>
+
+<!-- Barre d'onglets du bas (téléphone). -->
+<nav class="bottomnav" aria-label="Sections">
+  <button data-group="packs"><span aria-hidden="true">🎁</span>Packs</button>
+  <button data-group="cards"><span aria-hidden="true">🗂️</span>Cartes</button>
+  <button data-group="market"><span aria-hidden="true">⚖️</span>Marché</button>
+  <button data-group="social"><span aria-hidden="true">👥</span>Social<i class="ndot" hidden></i></button>
+  <button data-group="profile"><span aria-hidden="true">👤</span>Profil</button>
+</nav>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -164,13 +203,6 @@
     <button class="btn small primary" id="installGo">Ajouter</button>
   </div>
 </div>
-
-<footer class="pagefoot">
-  <a href="https://ko-fi.com/eirblast" target="_blank" rel="noopener" class="kofibtn">
-    <span aria-hidden="true">☕</span> Soutenir TubePacks sur Ko-fi
-  </a>
-  <p class="note">TubePacks est gratuit et sans publicité. Un café aide à payer le serveur.</p>
-</footer>
 
 <dialog id="modal">
   <div class="head"><h3 id="modalTitle">…</h3><button class="iconbtn" id="modalX" aria-label="Fermer">✕</button></div>

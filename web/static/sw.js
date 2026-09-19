@@ -4,7 +4,7 @@
    visite (démarrage instantané, y compris hors ligne). Tout ce qui est sous /api/
    passe exclusivement par le réseau : on ne sert jamais un solde ou une enchère périmés.
 */
-const VERSION = "tubepacks-v1";
+const VERSION = "tubepacks-v2";   // à incrémenter à chaque changement d'interface
 const SHELL = [
   "/",
   "/static/app.css",

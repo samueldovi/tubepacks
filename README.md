@@ -6,6 +6,7 @@ Un worker alimente le jeu en continu (vidéos ≥ 10 000 vues) et rafraîchit vu
 
 ```
 web/        FastAPI : pages, comptes (Argon2), sessions Redis, packs, enchères, guildes, admin
+web/social.py  amis, vitrine, explorateur, échanges, duels, signalements, liste noire
 web/static/ application installable (manifeste, service worker, icônes)
 web/lua.py  scripts Lua : pièces et cartes déplacées de façon atomique côté Redis
 worker/     moissonneuse : API Invidious / Piped, flux RSS des chaînes, yt-dlp en secours
@@ -43,6 +44,25 @@ redis       données persistantes (AOF, volume redis-data)
   rapporte **+3 % de pièces** à chaque ouverture de pack pour tous les membres, et **+1 pack de
   réserve tous les 4 niveaux**. Les avantages sont perdus en quittant la guilde. Niveau maximum : 20
   (paliers à 50, 150, 300, 500, 750… XP).
+
+- **Fiche carte** — toucher une carte, partout dans l'app, ouvre sa fiche : vues, j'aime, nombre de
+  joueurs qui la possèdent, amis qui l'ont, ventes en cours, et les actions (voir sur YouTube, vendre,
+  recycler, mettre en vitrine, échanger, signaler).
+- **Explorateur** — toutes les cartes du jeu, filtrables par rareté, possédées ou manquantes,
+  avec recherche et tri. Les cartes qu'on n'a pas sont grisées.
+- **Amis** — demande par pseudo (ou depuis un profil), acceptation, présence en ligne, puissance.
+  Deux demandes croisées valent acceptation.
+- **Vitrine** — jusqu'à 6 cartes choisies, affichées sur le profil au-dessus des plus rares.
+- **Échanges entre amis** — cartes et pièces de chaque côté, message, 72 h pour répondre. Rien n'est
+  bloqué pendant l'attente : tout est revérifié au moment de l'acceptation, d'un bloc (script Lua).
+  Si le proposant n'a plus ses cartes, l'échange échoue proprement et il est prévenu.
+- **Duels 1 contre 1** — la **puissance** d'un joueur est le total des vues de ses cartes uniques
+  (les doublons ne comptent pas). Un duel se joue au meilleur des trois manches ; à chaque manche la
+  jauge est partagée selon la racine carrée des puissances et un tirage désigne le vainqueur.
+  La racine laisse sa chance au plus faible : dix fois moins puissant, on gagne encore une manche sur
+  quatre (16 % des duels). Mise facultative, identique des deux côtés, sous séquestre jusqu'à la
+  réponse (24 h) ; le vainqueur empoche le tout. On peut défier n'importe quel joueur depuis son profil.
+- **Signalements** — chaque joueur peut signaler une vidéo (une fois), avec un motif et un commentaire.
 
 ## Application installable
 
@@ -116,6 +136,12 @@ L'onglet **Admin** donne accès à :
 - **Sources** : ajouter, retirer ou remettre en tête de file une source du worker.
 - **Enchères** : annuler une vente en cours (l'enchérisseur est remboursé, la carte rendue).
 - **Guildes** : liste, niveaux, trésor, dissolution (les membres sont libérés et prévenus).
+- **Signalements** : vidéos les plus signalées d'abord, motifs agrégés, commentaires ; classer sans
+  suite ou mettre en liste noire. La pastille rouge de l'onglet Admin signale qu'il y en a en attente.
+- **Liste noire** : une vidéo en liste noire sort des tirages et de l'explorateur, ses ventes en cours
+  sont annulées (enchérisseurs remboursés), et chaque exemplaire est retiré des collections et
+  remboursé à sa valeur de recyclage. Le worker ne la réintègre jamais. Réintégrer la remet en jeu,
+  sans rendre les exemplaires déjà remboursés. Un admin peut aussi blacklister depuis la fiche d'une carte.
 
 ## Déploiement sur Coolify
 
@@ -153,7 +179,10 @@ et le premier à l'enregistrer récupère les droits d'administration.
   (ou sur `localhost`). Coolify s'en occupe ; en test local en http, l'app reste utilisable
   mais n'est pas installable.
 - **Nouvelle version qui ne s'affiche pas** : le service worker sert l'ancienne coquille jusqu'au
-  rechargement suivant. Changer `VERSION` dans `web/static/sw.js` force le renouvellement du cache.
+  rechargement suivant. Changer `VERSION` dans `web/static/sw.js` force le renouvellement du cache —
+  à faire à chaque modification de l'interface.
+- **Explorateur** : le catalogue est gardé deux minutes en mémoire (la recherche relit tous les titres).
+  Au-delà de quelques centaines de milliers de vidéos, il faudra un vrai index de recherche.
 - **Mise à l'échelle** : le service web tient à une seule instance — la clôture des enchères y tourne
   en tâche de fond (protégée par un verrou Redis, donc plusieurs instances restent correctes).
 

@@ -78,6 +78,8 @@ function modal(opts) {
   $("#modalTitle").textContent = opts.title || "";
   $("#modalBody").innerHTML = opts.body || "";
   $("#modalFoot").innerHTML = "";
+  $("#modalFoot").hidden = !(opts.buttons || []).length;
+  dlg.classList.toggle("wide", !!opts.wide);
   (opts.buttons || []).forEach(b => {
     const el = document.createElement("button");
     el.className = "btn " + (b.cls || "");
@@ -92,10 +94,12 @@ function modal(opts) {
 $("#modalX").onclick = () => $("#modal").close();
 
 /* ---------------- Carte ---------------- */
+const CARDS = {};   // dernière version connue de chaque carte affichée, pour la fiche
 function cardHTML(v, o) {
   o = o || {};
+  CARDS[v.id] = Object.assign(CARDS[v.id] || {}, v);
   const [emo, a, b] = CAT[v.category] || CAT.autre, id = encodeURIComponent(v.id);
-  return `<div class="card ${v.tier}">
+  return `<div class="card ${v.tier}" data-vid="${esc(v.id)}">
     ${v.new ? '<span class="newbadge">Nouveau</span>' : ""}
     <div class="thumb" style="background:linear-gradient(135deg,${a},${b})"><span aria-hidden="true">${emo}</span>
       <img src="https://i.ytimg.com/vi/${id}/mqdefault.jpg" alt="" loading="lazy"></div>
@@ -105,12 +109,11 @@ function cardHTML(v, o) {
       ${v.likes != null ? `<div class="likes">👍 ${fmt(v.likes)} j'aime</div>` : ""}
       <div class="cfoot"><span class="views">${fmt(v.views)} <small>vues</small></span><span class="tier">${esc(tierName(v.tier))}</span></div>
     </div>
-    ${o.noLink ? "" : `<a class="link" href="https://youtu.be/${id}" target="_blank" rel="noopener"><span>Voir « ${esc(v.title)} » sur YouTube</span></a>`}
   </div>`;
 }
 // Miniature introuvable : on garde le fond coloré (pas de onerror inline, compatible CSP).
 document.addEventListener("error", e => {
-  if (e.target.tagName === "IMG" && e.target.closest(".thumb, .mini")) e.target.remove();
+  if (e.target.tagName === "IMG" && e.target.closest(".thumb, .mini, .mthumb")) e.target.remove();
 }, true);
 
 /* ---------------- Barre du haut ---------------- */
@@ -123,7 +126,7 @@ function renderWallet() {
   if (pc) pc.textContent = clock(ME.next_pack);
   $("#bellDot").hidden = !ME.notifs;
   $("#bellDot").textContent = ME.notifs;
-  $$("#nav button[data-view='admin']").forEach(b => { b.hidden = !ME.admin; });
+  $$("[data-group='admin'], #adminMenu").forEach(b => { b.hidden = !ME.admin; });
 }
 
 async function loadMe() {
@@ -181,23 +184,76 @@ $("#bell").onclick = async () => {
 };
 
 /* ---------------- Routeur ---------------- */
+// Cinq sections (six pour les admins), chacune regroupant une ou plusieurs vues.
+const GROUPS = {
+  packs: [["packs", "Packs"]],
+  cards: [["coll", "Ma collection"], ["explore", "Explorateur"]],
+  market: [["market", "Enchères"]],
+  social: [["friends", "Amis"], ["trades", "Échanges"], ["duels", "Duels"], ["guild", "Guilde"]],
+  profile: [["profile", "Profil"]],
+  admin: [["admin", "Admin"]],
+};
+const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([id]) => id === v)) || "packs";
+const lastInGroup = {};
 const LOADERS = {
   packs: () => { renderPackTable(); loadColl(); },
   coll: () => loadColl(),
+  explore: () => loadExplore(),
   market: () => loadMarket(),
+  friends: () => loadFriends(),
+  trades: () => loadTrades(),
+  duels: () => loadDuels(),
   guild: () => loadGuild(),
-  profile: () => loadProfile(),
+  profile: () => loadProfile(profileName),
   admin: () => loadAdmin(),
 };
 function go(name) {
+  if (!LOADERS[name]) name = "packs";
   view = name;
-  $$("#nav button").forEach(b => b.setAttribute("aria-current", String(b.dataset.view === name)));
-  ["packs","coll","market","guild","profile","admin"].forEach(v => { $("#view-" + v).hidden = v !== name; });
+  const group = groupOf(name);
+  lastInGroup[group] = name;
+  $$("[data-group]").forEach(b => b.setAttribute("aria-current", String(b.dataset.group === group)));
+  const tabs = GROUPS[group];
+  $("#subnav").hidden = tabs.length < 2;
+  $("#subnav").innerHTML = tabs.length < 2 ? "" : tabs.map(([id, label]) =>
+    `<button data-sub="${id}" aria-current="${id === name}">${label}<i class="ndot" data-dot="${id}" hidden></i></button>`).join("");
+  $$("#subnav [data-sub]").forEach(b => b.onclick = () => go(b.dataset.sub));
+  Object.keys(LOADERS).forEach(v => { $("#view-" + v).hidden = v !== name; });
   try { localStorage.setItem("tp:view", name); } catch (e) {}
-  (LOADERS[name] || (() => {}))();
+  closeMenu();
+  LOADERS[name]();
+  paintDots();
   window.scrollTo({top:0, behavior:"instant"});
 }
-$$("#nav button").forEach(b => b.onclick = () => go(b.dataset.view));
+$$("[data-group]").forEach(b => b.onclick = () => go(lastInGroup[b.dataset.group] || GROUPS[b.dataset.group][0][0]));
+
+/* ---------------- Menu ---------------- */
+function closeMenu() { $("#menu").hidden = true; $("#menuBtn").setAttribute("aria-expanded", "false"); }
+$("#menuBtn").onclick = e => {
+  e.stopPropagation();
+  const m = $("#menu");
+  if (!m.hidden) return closeMenu();
+  const r = $("#menuBtn").getBoundingClientRect();
+  m.style.top = (r.bottom + 8) + "px";
+  m.style.right = Math.max(8, window.innerWidth - r.right) + "px";
+  m.hidden = false;
+  $("#menuBtn").setAttribute("aria-expanded", "true");
+};
+document.addEventListener("click", e => { if (!e.target.closest("#menu")) closeMenu(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
+$("#adminMenu").onclick = () => go("admin");
+
+/* ---------------- Pastilles : ce qui attend une réponse ---------------- */
+let COUNTS = {friends: 0, trades: 0, duels: 0, reports: 0};
+async function loadCounts() {
+  try { COUNTS = Object.assign({reports: 0}, await api("/api/social/counts")); paintDots(); } catch (e) {}
+}
+function paintDots() {
+  const social = COUNTS.friends + COUNTS.trades + COUNTS.duels;
+  $$("[data-group='social'] .ndot").forEach(d => { d.hidden = !social; });
+  $$("[data-group='admin'] .ndot, #reportsDot").forEach(d => { d.hidden = !COUNTS.reports; });
+  $$("#subnav [data-dot]").forEach(d => { d.hidden = !COUNTS[d.dataset.dot]; });
+}
 
 /* ================= PACKS ================= */
 function renderPackTable() {
@@ -304,24 +360,13 @@ function renderColl() {
   $("#collSummary").innerHTML = `${nf(coll.cards.length)} cartes uniques sur ${nf(total)} · ${nf(coll.dupes)} doublons
     recyclables pour <b>${nf(coll.scrap)} 🪙</b>`;
   $("#collFilters").innerHTML = [{key:"all", name:"Toutes", owned:coll.cards.length, total}, ...coll.tiers]
-    .map(t => `<button class="chip" data-f="${t.key}" aria-pressed="${collFilter === t.key}">${esc(t.name)} ${nf(t.owned)}/${nf(t.total)}</button>`).join("");
+    .map(t => `<button class="chip" data-f="${t.key}" aria-pressed="${collFilter === t.key}">${esc(t.name)}<small>${nf(t.owned)}/${nf(t.total)}</small></button>`).join("");
   $$("#collFilters .chip").forEach(c => c.onclick = () => { collFilter = c.dataset.f; collShown = 60; renderColl(); });
 
   const list = collList();
   $("#cgrid").innerHTML = list.length
-    ? list.slice(0, collShown).map(v => `<div class="cell" data-id="${esc(v.id)}">
-        ${v.count > 1 ? `<span class="count">×${v.count}</span>` : ""}
-        ${cardHTML(v)}
-        <div class="tools">
-          <button data-act="sell" data-id="${esc(v.id)}">Vendre</button>
-          ${v.count > 1 ? `<button data-act="scrap" data-id="${esc(v.id)}">Recycler</button>` : ""}
-        </div></div>`).join("")
-    : `<p class="empty"><b>Aucune carte ici</b>Ouvre des packs ou chine à l'hôtel des ventes.</p>`;
-  $$("#cgrid .tools button").forEach(b => b.onclick = e => {
-    e.preventDefault(); e.stopPropagation();
-    const v = coll.cards.find(x => x.id === b.dataset.id);
-    if (v) (b.dataset.act === "sell" ? sellDialog : scrapDialog)(v);
-  });
+    ? list.slice(0, collShown).map(cellHTML).join("")
+    : `<p class="empty" style="grid-column:1/-1"><b>Aucune carte ici</b>Ouvre des packs ou chine à l'hôtel des ventes.</p>`;
   $("#more").innerHTML = list.length > collShown ? `<button class="btn" id="moreBtn">Afficher plus (${list.length - collShown} restantes)</button>` : "";
   if ($("#moreBtn")) $("#moreBtn").onclick = () => { collShown += 60; renderColl(); };
 }
@@ -540,8 +585,12 @@ function showInstall(force) {
 window.addEventListener("beforeinstallprompt", e => {
   e.preventDefault();
   installEvent = e;
+  $("#installMenu").hidden = false;
   showInstall(false);
 });
+// Le menu garde une porte d'entrée même après « Plus tard » sur le bandeau.
+if (iOS && !standalone()) $("#installMenu").hidden = false;
+$("#installMenu").onclick = () => { closeMenu(); showInstall(true); };
 window.addEventListener("appinstalled", () => {
   $("#installBanner").hidden = true;
   toast("TubePacks est installé. À bientôt !", "good");
@@ -846,8 +895,557 @@ function confirmDialog(title, text, action) {
   });
 }
 
+/* ================= CARTES : cellule, miniature, fiche ================= */
+function cellHTML(v) {
+  const missing = v.count === 0;
+  return `<div class="cell${missing ? " missing" : ""}" tabindex="0" aria-label="${esc(v.title)}">
+    ${v.count > 1 ? `<span class="count">×${v.count}</span>` : ""}${cardHTML(v)}</div>`;
+}
+function miniHTML(v, qty, label) {
+  if (!v) return `<div class="minicard"><div class="mthumb">❔</div><b>—</b><span class="mt">Carte retirée</span></div>`;
+  CARDS[v.id] = Object.assign(CARDS[v.id] || {}, v);
+  const [emo, a, b] = CAT[v.category] || CAT.autre;
+  return `<button type="button" class="minicard ${v.tier}" data-vid="${esc(v.id)}" title="${esc(v.title)}">
+    <div class="mthumb" style="background:linear-gradient(135deg,${a},${b})">${emo}
+      <img src="https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/mqdefault.jpg" alt="" loading="lazy"></div>
+    <b>${fmt(v.views)}</b><span class="mt">${esc(v.title)}</span>
+    ${label ? `<span class="qty">${label}</span>` : qty > 1 ? `<span class="qty">×${qty}</span>` : ""}</button>`;
+}
+
+// Toucher une carte (n'importe où, sauf dans une fenêtre ou un sélecteur) ouvre sa fiche.
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-vid]");
+  if (!el || el.closest("dialog") || el.closest(".picker")) return;
+  const slot = el.closest(".slot");
+  if (slot && !slot.classList.contains("flipped")) return;      // d'abord retourner la carte
+  e.preventDefault();
+  openCard(el.dataset.vid);
+});
+document.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.classList && e.target.classList.contains("cell")) {
+    const c = e.target.querySelector("[data-vid]");
+    if (c) { e.preventDefault(); openCard(c.dataset.vid); }
+  }
+});
+
+const REASONS = {
+  pas_fr: "Pas en français", choquant: "Contenu choquant ou inapproprié",
+  indispo: "Vidéo supprimée ou privée", spam: "Spam, arnaque ou contenu trompeur", autre: "Autre",
+};
+
+async function openCard(vid) {
+  let d;
+  try { d = await api("/api/card/" + encodeURIComponent(vid)); } catch (e) { return fail(e); }
+  const v = d.card, own = d.count;
+  modal({
+    title: "Carte " + tierName(v.tier).toLowerCase(),
+    body: `<div class="cardsheet">
+        <div class="big">${cardHTML(v)}</div>
+        <div style="min-width:0">
+          <h4>${esc(v.title)}</h4>
+          <div class="note">${esc(v.channel)}</div>
+          <dl class="facts">
+            <dt>Vues</dt><dd>${nf(v.views)}</dd>
+            ${v.likes != null ? `<dt>J'aime</dt><dd>${nf(v.likes)}</dd>` : ""}
+            ${v.year ? `<dt>Année</dt><dd>${esc(v.year)}</dd>` : ""}
+            <dt>Tu en as</dt><dd>${own ? "×" + own : "aucune"}</dd>
+            <dt>Joueurs</dt><dd>${nf(d.owners)}</dd>
+            <dt>Recyclage</dt><dd>${nf(d.value)} 🪙</dd>
+          </dl>
+        </div>
+      </div>
+      ${d.blacklisted ? `<p class="callout bad">Cette vidéo a été retirée du jeu par un administrateur.</p>` : ""}
+      ${d.friends.length ? `<p class="callout">🤝 Chez tes amis : <b>${d.friends.map(esc).join(", ")}</b></p>` : ""}
+      ${d.auctions.length ? `<p class="callout">⚖️ En vente : ${d.auctions.map(a =>
+          `${nf(a.price)} 🪙 par ${esc(a.seller)}`).join(" · ")}</p>` : ""}
+      <div class="cactions">
+        <a class="btn primary wide" href="https://youtu.be/${encodeURIComponent(vid)}" target="_blank" rel="noopener">▶ Voir sur YouTube</a>
+        ${own ? `<button class="btn" data-a="sell">⚖️ Vendre</button>` : ""}
+        ${own > 1 ? `<button class="btn" data-a="scrap">♻️ Recycler ×${own - 1}</button>` : ""}
+        ${own ? `<button class="btn" data-a="show">${d.showcase ? "✖ Retirer de la vitrine" : "⭐ Mettre en vitrine"}</button>` : ""}
+        ${own ? `<button class="btn" data-a="trade">🤝 Échanger</button>` : ""}
+        ${!own && d.friends.length ? `<button class="btn" data-a="ask">🤝 Demander à un ami</button>` : ""}
+        <button class="btn" data-a="report" ${d.reported ? "disabled" : ""}>🚩 ${d.reported ? "Déjà signalée" : "Signaler"}</button>
+        ${d.admin ? `<button class="btn danger" data-a="bl">${d.blacklisted ? "↩ Réintégrer" : "⛔ Liste noire"}</button>` : ""}
+      </div>`,
+    onOpen: () => $$("#modalBody [data-a]").forEach(b => b.onclick = () => cardAction(b.dataset.a, v, d)),
+  });
+}
+
+async function cardAction(act, v, d) {
+  const withCount = Object.assign({}, v, {count: d.count});
+  if (act === "sell") return sellDialog(withCount);
+  if (act === "scrap") return scrapDialog(withCount);
+  if (act === "report") return reportDialog(v);
+  if (act === "trade") return tradeBuilder({give: {[v.id]: 1}});
+  if (act === "ask") return tradeBuilder({to: d.friends[0], want: {[v.id]: 1}});
+  if (act === "bl") return d.blacklisted ? unblacklist(v.id, () => $("#modal").close()) : blacklistDialog(v);
+  if (act === "show") {
+    try {
+      const r = await api("/api/showcase/toggle", {id: v.id});
+      toast(r.added ? "Ajoutée à ta vitrine." : "Retirée de ta vitrine.", "good");
+      $("#modal").close();
+      if (view === "profile") loadProfile(profileName);
+    } catch (e) { fail(e); }
+  }
+}
+
+function reportDialog(v) {
+  modal({
+    title: "Signaler cette vidéo",
+    body: `<p class="note">« ${esc(v.title)} » — un administrateur examinera le signalement.</p>
+      <label class="field">Motif
+        <select id="rReason">${Object.entries(REASONS).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></label>
+      <label class="field">Précisions (facultatif)
+        <textarea id="rComment" maxlength="300" placeholder="Ce qui ne va pas avec cette vidéo…"></textarea></label>`,
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Signaler", cls:"primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/report", {id: v.id, reason: $("#rReason").value, comment: $("#rComment").value});
+          d.close(); toast("Merci, le signalement est transmis.", "good");
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+function blacklistDialog(v, after) {
+  modal({
+    title: "Mettre en liste noire",
+    body: `<p class="note">« ${esc(v.title)} » sera retirée du jeu : plus aucun tirage, ventes en cours annulées,
+        et chaque exemplaire possédé est retiré des collections puis remboursé à sa valeur de recyclage.
+        Le worker ne la réintégrera pas.</p>
+      <label class="field">Raison (visible des admins)<input type="text" id="blReason" maxlength="200" placeholder="Pas en français"></label>`,
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Retirer du jeu", cls:"primary danger", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          const r = await api("/api/admin/blacklist", {id: v.id, reason: $("#blReason").value});
+          d.close();
+          toast(`Retirée : ${r.copies} exemplaire(s) chez ${r.players} joueur(s), ${nf(r.refund)} 🪙 remboursées.`, "good");
+          loadCounts();
+          if (after) after();
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+async function unblacklist(vid, after) {
+  try { await api("/api/admin/unblacklist", {id: vid}); toast("Vidéo réintégrée au jeu.", "good"); if (after) after(); }
+  catch (e) { fail(e); }
+}
+
+/* ================= EXPLORATEUR ================= */
+let ex = {tier: "all", page: 0};
+async function loadExplore() {
+  const q = encodeURIComponent($("#exSearch").value.trim());
+  try {
+    const d = await api(`/api/explore?tier=${ex.tier}&q=${q}&sort=${$("#exSort").value}&owned=${$("#exOwned").value}&page=${ex.page}`);
+    ex.page = d.page;
+    const pct = d.catalog ? Math.round(d.owned / d.catalog * 100) : 0;
+    $("#exSummary").innerHTML = `${nf(d.catalog)} cartes dans le jeu · tu en possèdes <b>${nf(d.owned)}</b> (${pct} %)`;
+    $("#exTiers").innerHTML = [{key: "all", name: "Toutes", owned: d.owned, total: d.catalog}, ...d.tiers].map(t =>
+      `<button class="chip" data-t="${t.key}" aria-pressed="${ex.tier === t.key}">${esc(t.name)}<small>${nf(t.owned)}/${nf(t.total)}</small></button>`).join("");
+    $$("#exTiers .chip").forEach(c => c.onclick = () => { ex.tier = c.dataset.t; ex.page = 0; loadExplore(); });
+    $("#exGrid").innerHTML = d.items.length ? d.items.map(cellHTML).join("")
+      : `<p class="empty" style="grid-column:1/-1"><b>Aucune carte</b>Essaie un autre filtre.</p>`;
+    $("#exPager").innerHTML = d.pages > 1 ? `
+      <button class="btn small" id="exPrev" ${d.page ? "" : "disabled"}>← Précédente</button>
+      <span class="note">Page ${d.page + 1} / ${d.pages} · ${nf(d.total)} cartes</span>
+      <button class="btn small" id="exNext" ${d.page < d.pages - 1 ? "" : "disabled"}>Suivante →</button>`
+      : `<span class="note">${nf(d.total)} carte(s)</span>`;
+    if ($("#exPrev")) $("#exPrev").onclick = () => { ex.page--; loadExplore(); window.scrollTo({top: 0}); };
+    if ($("#exNext")) $("#exNext").onclick = () => { ex.page++; loadExplore(); window.scrollTo({top: 0}); };
+  } catch (e) { fail(e); }
+}
+$("#exSearch").addEventListener("input", debounce(() => { ex.page = 0; loadExplore(); }, 300));
+["exSort", "exOwned"].forEach(id => $("#" + id).addEventListener("change", () => { ex.page = 0; loadExplore(); }));
+
+/* ================= AMIS ================= */
+let FRIENDS = [];
+let profileName = null;
+function openProfile(name) { profileName = name || null; go("profile"); }
+$$("[data-group='profile']").forEach(b => b.addEventListener("click", () => { profileName = null; }, true));
+
+function personHTML(p, actions) {
+  const status = p.online ? "en ligne" : p.seen ? "vu " + ago(p.seen) : "jamais vu";
+  return `<div class="person">
+    <div class="avwrap"><div class="avatar sm">${esc(p.avatar)}</div>${p.online ? '<i class="online"></i>' : ""}</div>
+    <div class="pi">
+      <div class="pn"><button class="linkish" data-prof="${esc(p.name)}">${esc(p.username)}</button>
+        ${p.tag ? `<span class="gtag">[${esc(p.tag)}]</span>` : ""}</div>
+      <div class="pm"><span class="power">⚡ ${fmt(p.power)}</span> · ${nf(p.unique)} cartes · ${status}</div>
+    </div>
+    <div class="pa">${actions}</div>
+  </div>`;
+}
+function bindPeople(root) {
+  $$(root + " [data-prof]").forEach(b => b.onclick = () => openProfile(b.dataset.prof));
+}
+
+async function loadFriends() {
+  let d;
+  try { d = await api("/api/friends"); } catch (e) { return fail(e); }
+  FRIENDS = d.friends;
+  $("#friendsBody").innerHTML = `
+    <div class="phead"><h1>Amis</h1><p>Échange des cartes avec tes amis et défie-les en duel.</p></div>
+    <form class="addfriend" id="addFriend">
+      <input type="text" id="friendName" placeholder="Pseudo d'un joueur" maxlength="24" autocomplete="off" aria-label="Pseudo">
+      <button class="btn primary">Ajouter</button>
+    </form>
+    ${d.incoming.length ? `<div class="sectitle"><h2>Demandes reçues (${d.incoming.length})</h2></div>
+      <div class="plist">${d.incoming.map(p => personHTML(p, `
+        <button class="btn small primary" data-acc="${esc(p.name)}">Accepter</button>
+        <button class="btn small" data-dec="${esc(p.name)}">Refuser</button>`)).join("")}</div>` : ""}
+    <div class="sectitle"><h2>Mes amis (${d.friends.length})</h2></div>
+    ${d.friends.length ? `<div class="plist">${d.friends.map(p => personHTML(p, `
+        <button class="btn small" data-trade="${esc(p.name)}">🤝 Échanger</button>
+        <button class="btn small" data-duel="${esc(p.name)}">⚔️ Défier</button>
+        <button class="btn small danger" data-rm="${esc(p.name)}" aria-label="Retirer ${esc(p.username)}">✕</button>`)).join("")}</div>`
+      : `<p class="empty"><b>Pas encore d'amis</b>Ajoute un joueur par son pseudo, ou depuis le classement de ton profil.</p>`}
+    ${d.outgoing.length ? `<div class="sectitle"><h2>Demandes envoyées</h2></div>
+      <div class="plist">${d.outgoing.map(p => personHTML(p,
+        `<button class="btn small" data-cancel="${esc(p.name)}">Annuler</button>`)).join("")}</div>` : ""}`;
+  bindPeople("#friendsBody");
+  $("#addFriend").onsubmit = async e => {
+    e.preventDefault();
+    const name = $("#friendName").value.trim();
+    if (!name) return;
+    try {
+      const r = await api("/api/friends/request", {name});
+      toast(r.status === "friends" ? "Vous êtes maintenant amis !" : "Demande envoyée.", "good");
+      loadFriends();
+    } catch (err) { fail(err); }
+  };
+  const act = (sel, fn) => $$("#friendsBody " + sel).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await fn(b); loadFriends(); loadCounts(); } catch (e) { b.disabled = false; fail(e); }
+  });
+  act("[data-acc]", b => api("/api/friends/respond", {name: b.dataset.acc, accept: true}));
+  act("[data-dec]", b => api("/api/friends/respond", {name: b.dataset.dec, accept: false}));
+  act("[data-cancel]", b => api("/api/friends/cancel", {name: b.dataset.cancel}));
+  $$("#friendsBody [data-rm]").forEach(b => b.onclick = () => confirmDialog(
+    "Retirer " + b.dataset.rm, "Vous ne serez plus amis ; les échanges en cours restent visibles.",
+    async () => { await api("/api/friends/remove", {name: b.dataset.rm}); loadFriends(); }));
+  $$("#friendsBody [data-trade]").forEach(b => b.onclick = () => tradeBuilder({to: b.dataset.trade}));
+  $$("#friendsBody [data-duel]").forEach(b => b.onclick = () => duelDialog(b.dataset.duel));
+}
+
+async function ensureFriends() {
+  if (!FRIENDS.length) { try { FRIENDS = (await api("/api/friends")).friends; } catch (e) {} }
+  return FRIENDS;
+}
+
+/* ================= ÉCHANGES ================= */
+const T_STATUS = {pending: ["En attente", ""], accepted: ["Accepté", "ok"], declined: ["Refusé", "no"],
+  cancelled: ["Annulé", "no"], expired: ["Expiré", ""], failed: ["Échoué", "no"]};
+
+function tradeHTML(t) {
+  const me = ME ? ME.name : "", mine = t.from === me, other = mine ? t.to : t.from;
+  const [label, cls] = T_STATUS[t.status] || ["", ""];
+  const side = (title, items, coins) => `<div class="tside"><h4>${title}</h4>
+    <div class="titems">${items.map(i => miniHTML(i.card, i.count)).join("") || '<span class="note">Aucune carte</span>'}</div>
+    ${coins ? `<div class="tcoins">+ ${nf(coins)} 🪙</div>` : ""}</div>`;
+  // Présenté du point de vue du joueur : ce qu'il donne, ce qu'il reçoit.
+  const giveSide = mine ? side("Tu donnes", t.give, t.coins_give) : side("Tu reçois", t.give, t.coins_give);
+  const wantSide = mine ? side("Tu reçois", t.want, t.coins_want) : side("Tu donnes", t.want, t.coins_want);
+  return `<article class="trade">
+    <div class="thead">${mine ? "Proposé à" : "Proposé par"} <b>${esc(other)}</b>
+      <span class="tag ${cls}">${label}</span><span class="spacer"></span>
+      ${t.status === "pending" ? `<span class="note">expire dans <span data-ends="${t.expires}"></span></span>` : `<span class="note">${ago(t.closed || t.created)}</span>`}</div>
+    <div class="tsides">${mine ? giveSide : wantSide}<div class="tarrow">⇄</div>${mine ? wantSide : giveSide}</div>
+    ${t.message ? `<div class="tmsg">« ${esc(t.message)} »</div>` : ""}
+    ${t.reason ? `<div class="callout bad">${esc(t.reason)}</div>` : ""}
+    ${t.status === "pending" ? `<div class="tfoot">${mine
+      ? `<button class="btn small danger" data-tc="${esc(t.id)}">Annuler</button>`
+      : `<button class="btn small" data-td="${esc(t.id)}">Refuser</button><button class="btn small primary" data-ta="${esc(t.id)}">Accepter</button>`}</div>` : ""}
+  </article>`;
+}
+
+async function loadTrades() {
+  let d;
+  try { d = await api("/api/trades"); } catch (e) { return fail(e); }
+  $("#tradesBody").innerHTML = `
+    <div class="phead"><h1>Échanges</h1><p>Entre amis uniquement. Rien n'est bloqué pendant l'attente :
+      tout est revérifié au moment où l'échange est accepté.</p></div>
+    <button class="btn primary" id="newTrade">🤝 Proposer un échange</button>
+    ${d.incoming.length ? `<div class="sectitle"><h2>Reçus (${d.incoming.length})</h2></div>${d.incoming.map(tradeHTML).join("")}` : ""}
+    ${d.outgoing.length ? `<div class="sectitle"><h2>Envoyés (${d.outgoing.length})</h2></div>${d.outgoing.map(tradeHTML).join("")}` : ""}
+    ${!d.incoming.length && !d.outgoing.length ? `<p class="empty"><b>Aucun échange en cours</b>Propose un échange à un ami, ou depuis la fiche d'une carte.</p>` : ""}
+    ${d.history.length ? `<div class="sectitle"><h2>Historique</h2></div>${d.history.map(tradeHTML).join("")}` : ""}`;
+  $("#newTrade").onclick = () => tradeBuilder({});
+  const act = (sel, path, msg) => $$("#tradesBody " + sel).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(path, {id: b.dataset[Object.keys(b.dataset)[0]]}); toast(msg, "good"); loadTrades(); loadCounts(); loadMe(); }
+    catch (e) { b.disabled = false; fail(e); loadTrades(); }
+  });
+  act("[data-ta]", "/api/trades/accept", "Échange conclu !");
+  act("[data-td]", "/api/trades/decline", "Échange refusé.");
+  act("[data-tc]", "/api/trades/cancel", "Proposition annulée.");
+  tickCountdowns();
+}
+
+// Constructeur : toucher une carte ajoute un exemplaire ; au-delà du maximum, elle est retirée.
+async function tradeBuilder(init) {
+  const friends = await ensureFriends();
+  if (!friends.length) { toast("Ajoute d'abord un ami pour échanger.", "bad"); return go("friends"); }
+  if (!coll.cards.length) await loadColl();
+  const st = {to: init.to || friends[0].name, give: init.give || {}, want: init.want || {}, theirs: []};
+  const loadTheirs = async () => {
+    try { st.theirs = (await api("/api/collection/" + encodeURIComponent(st.to))).cards; } catch (e) { st.theirs = []; fail(e); }
+  };
+  await loadTheirs();
+  const pickHTML = (cards, sel, q) => {
+    const list = cards.filter(c => !q || (c.title + " " + c.channel).toLowerCase().includes(q)).slice(0, 120);
+    return list.length ? list.map(c => {
+      const n = sel[c.id] || 0;
+      return miniHTML(c, 0, n ? `${n}/${c.count}` : c.count > 1 ? "×" + c.count : "").replace('class="minicard', `class="minicard${n ? " sel" : ""}`);
+    }).join("") : `<div class="pick-empty">Aucune carte.</div>`;
+  };
+  const summary = () => {
+    const n = o => Object.values(o).reduce((a, b) => a + b, 0);
+    return `Tu donnes <b>${n(st.give)}</b> carte(s)${Number($("#tcGive").value) ? ` + ${nf($("#tcGive").value)} 🪙` : ""},
+      tu demandes <b>${n(st.want)}</b> carte(s)${Number($("#tcWant").value) ? ` + ${nf($("#tcWant").value)} 🪙` : ""}.`;
+  };
+  const draw = () => {
+    $("#pkGive").innerHTML = pickHTML(coll.cards, st.give, ($("#qGive").value || "").toLowerCase());
+    $("#pkWant").innerHTML = pickHTML(st.theirs, st.want, ($("#qWant").value || "").toLowerCase());
+    $("#tSum").innerHTML = summary();
+  };
+  const bump = (sel, cards, vid) => {
+    const c = cards.find(x => x.id === vid);
+    if (!c) return;
+    const n = (sel[vid] || 0) + 1;
+    if (n > c.count) delete sel[vid]; else sel[vid] = n;
+    draw();
+  };
+  modal({
+    title: "Proposer un échange",
+    wide: true,
+    body: `<label class="field">Avec
+        <select id="tTo">${friends.map(f => `<option value="${esc(f.name)}" ${f.name === st.to ? "selected" : ""}>${esc(f.username)}</option>`).join("")}</select></label>
+      <p class="note">Touche une carte pour ajouter un exemplaire ; au-delà du maximum, elle est retirée.</p>
+      <div class="builder">
+        <div><h4>Tu donnes</h4>
+          <input type="search" id="qGive" placeholder="Filtrer ma collection…">
+          <div class="picker" id="pkGive" style="margin-top:8px"></div>
+          <label class="field" style="margin-top:8px">Pièces en plus<input type="number" id="tcGive" min="0" value="0"></label></div>
+        <div><h4>Tu demandes</h4>
+          <input type="search" id="qWant" placeholder="Filtrer sa collection…">
+          <div class="picker" id="pkWant" style="margin-top:8px"></div>
+          <label class="field" style="margin-top:8px">Pièces demandées<input type="number" id="tcWant" min="0" value="0"></label></div>
+      </div>
+      <label class="field">Message (facultatif)<input type="text" id="tMsg" maxlength="200" placeholder="Ta Mythique contre mes deux Légendaires ?"></label>
+      <div class="tsummary" id="tSum"></div>`,
+    onOpen: () => {
+      draw();
+      $("#pkGive").onclick = e => { const m = e.target.closest("[data-vid]"); if (m) bump(st.give, coll.cards, m.dataset.vid); };
+      $("#pkWant").onclick = e => { const m = e.target.closest("[data-vid]"); if (m) bump(st.want, st.theirs, m.dataset.vid); };
+      ["qGive", "qWant", "tcGive", "tcWant"].forEach(id => $("#" + id).oninput = draw);
+      $("#tTo").onchange = async () => { st.to = $("#tTo").value; st.want = {}; await loadTheirs(); draw(); };
+    },
+    buttons: [
+      {label: "Annuler", onClick: d => d.close()},
+      {label: "Envoyer la proposition", cls: "primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/trades/propose", {to: st.to, give: st.give, want: st.want,
+            coins_give: Number($("#tcGive").value) || 0, coins_want: Number($("#tcWant").value) || 0, message: $("#tMsg").value});
+          d.close(); toast("Proposition envoyée à " + st.to + ".", "good");
+          go("trades");
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+/* ================= DUELS ================= */
+const D_STATUS = {declined: "Refusé", cancelled: "Annulé", expired: "Expiré"};
+const pctf = p => Math.round(p * 100) + " %";
+
+function gaugesHTML(res, left, right) {
+  // La jauge est partagée selon les chances de la manche ; le curseur montre le tirage.
+  return `<div class="odds-line"><span>${esc(left)} · ${pctf(res.p)}</span><span>${pctf(1 - res.p)} · ${esc(right)}</span></div>
+    <div class="rounds">${res.rounds.map((roll, i) => `
+      <div class="round"><span class="rl">${roll < res.p ? "✔ manche " + (i + 1) : ""}</span>
+        <div class="gauge"><i style="width:${res.p * 100}%"></i><span class="mark" style="left:${roll * 100}%;animation-delay:${i * .5}s"></span></div>
+        <span class="rr">${roll >= res.p ? "manche " + (i + 1) + " ✔" : ""}</span></div>`).join("")}</div>`;
+}
+
+function duelHTML(d) {
+  const me = ME ? ME.name : "", mine = d.from === me, other = mine ? d.to : d.from;
+  const done = d.status === "done";
+  const won = done && d.winner === me;
+  const r = d.result, live = d.live;
+  const pa = r ? r.pa : live ? live.pa : 0, pb = r ? r.pb : live ? live.pb : 0;
+  const myChance = live ? (mine ? live.match : 1 - live.match) : null;
+  return `<article class="duel">
+    <div class="thead">${mine ? "Défi lancé à" : "Défi de"} <b>${esc(other)}</b>
+      ${d.stake ? `<span class="tag">mise ${nf(d.stake)} 🪙</span>` : ""}
+      ${done ? `<span class="tag ${won ? "ok" : "no"}">${won ? "Victoire" : "Défaite"}</span>`
+             : d.status !== "pending" ? `<span class="tag">${D_STATUS[d.status] || d.status}</span>` : ""}
+      <span class="spacer"></span>
+      ${d.status === "pending" ? `<span class="note">expire dans <span data-ends="${d.expires}"></span></span>` : ""}</div>
+    <div class="vs">
+      <div class="side"><b>${esc(d.from)}</b><span class="power">⚡ ${fmt(pa)}</span></div>
+      <div class="${done ? "scoreline" : "vsx"}">${done ? r.score.join(" – ") : "VS"}</div>
+      <div class="side"><b>${esc(d.to)}</b><span class="power">⚡ ${fmt(pb)}</span></div>
+    </div>
+    ${done ? gaugesHTML(r, d.from, d.to) : ""}
+    ${myChance != null ? `<p class="note center" style="margin:0">Tes chances de gagner : <b>${pctf(myChance)}</b></p>` : ""}
+    ${d.status === "pending" ? `<div class="tfoot">${mine
+      ? `<button class="btn small danger" data-dc="${esc(d.id)}">Annuler</button>`
+      : `<button class="btn small" data-dd="${esc(d.id)}">Refuser</button><button class="btn small primary" data-da="${esc(d.id)}">⚔️ Accepter${d.stake ? " (" + nf(d.stake) + " 🪙)" : ""}</button>`}</div>` : ""}
+  </article>`;
+}
+
+async function loadDuels() {
+  let d;
+  try { d = await api("/api/duels"); } catch (e) { return fail(e); }
+  const total = d.me.won + d.me.lost;
+  $("#duelsBody").innerHTML = `
+    <div class="phead"><h1>Duels</h1><p>Ta <b>puissance</b> est le total des vues de tes cartes uniques.
+      Un duel se joue au meilleur des trois manches : la jauge de chaque manche est partagée selon vos
+      puissances, et un tirage désigne le vainqueur. Le plus fort est favori, pas certain de gagner.</p></div>
+    <div class="stats" style="margin-bottom:14px">
+      <div class="stat"><b class="power">⚡ ${fmt(d.me.power)}</b><span>ta puissance</span></div>
+      <div class="stat"><b class="win">${nf(d.me.won)}</b><span>victoires</span></div>
+      <div class="stat"><b class="lose">${nf(d.me.lost)}</b><span>défaites</span></div>
+      <div class="stat"><b>${total ? Math.round(d.me.won / total * 100) + " %" : "—"}</b><span>de réussite</span></div>
+    </div>
+    <button class="btn primary" id="newDuel">⚔️ Lancer un défi</button>
+    ${d.incoming.length ? `<div class="sectitle"><h2>Défis reçus (${d.incoming.length})</h2></div>${d.incoming.map(duelHTML).join("")}` : ""}
+    ${d.outgoing.length ? `<div class="sectitle"><h2>Défis envoyés</h2></div>${d.outgoing.map(duelHTML).join("")}` : ""}
+    ${d.history.length ? `<div class="sectitle"><h2>Derniers duels</h2></div>${d.history.map(duelHTML).join("")}`
+      : !d.incoming.length && !d.outgoing.length ? `<p class="empty"><b>Aucun duel pour l'instant</b>Défie un ami, ou n'importe quel joueur depuis son profil.</p>` : ""}`;
+  $("#newDuel").onclick = () => duelDialog("");
+  $$("#duelsBody [data-da]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api("/api/duels/accept", {id: b.dataset.da}); duelResult(r); loadDuels(); loadMe(); loadCounts(); }
+    catch (e) { b.disabled = false; fail(e); }
+  });
+  const act = (sel, path, msg) => $$("#duelsBody " + sel).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(path, {id: b.dataset[Object.keys(b.dataset)[0]]}); toast(msg, "good"); loadDuels(); loadMe(); loadCounts(); }
+    catch (e) { b.disabled = false; fail(e); }
+  });
+  act("[data-dd]", "/api/duels/decline", "Défi refusé.");
+  act("[data-dc]", "/api/duels/cancel", "Défi annulé, mise rendue.");
+  tickCountdowns();
+}
+
+function duelResult(d) {
+  const me = ME ? ME.name : "", won = d.winner === me;
+  modal({
+    title: won ? "🏆 Victoire !" : "Défaite…",
+    body: `<div class="duel" style="box-shadow:none;border:0;padding:0">
+      <div class="vs">
+        <div class="side"><b>${esc(d.from)}</b><span class="power">⚡ ${fmt(d.result.pa)}</span></div>
+        <div class="scoreline">${d.result.score.join(" – ")}</div>
+        <div class="side"><b>${esc(d.to)}</b><span class="power">⚡ ${fmt(d.result.pb)}</span></div>
+      </div>
+      ${gaugesHTML(d.result, d.from, d.to)}
+      ${d.stake ? `<p class="callout center">${won ? `+${nf(2 * d.stake)} 🪙 remportées` : `${nf(d.stake)} 🪙 perdues`}</p>` : ""}</div>`,
+    buttons: [{label: "Fermer", cls: "primary", onClick: dl => dl.close()}],
+  });
+}
+
+async function duelDialog(name) {
+  const friends = await ensureFriends();
+  modal({
+    title: "Lancer un défi",
+    body: `<label class="field">Adversaire
+        <input type="text" id="dTo" list="dFriends" maxlength="24" value="${esc(name)}" placeholder="Pseudo du joueur" autocomplete="off">
+        <datalist id="dFriends">${friends.map(f => `<option value="${esc(f.name)}">`).join("")}</datalist></label>
+      <label class="field">Mise (facultative)
+        <input type="number" id="dStake" min="0" max="100000" value="0" step="50">
+        <span class="hint">Chacun mise la même somme ; le vainqueur empoche le tout. Ta mise est bloquée jusqu'à la réponse (24 h max).</span></label>
+      <div class="callout" id="dOdds">Choisis un adversaire pour voir vos chances.</div>`,
+    onOpen: () => {
+      const odds = debounce(async () => {
+        const n = $("#dTo").value.trim();
+        if (!n) return;
+        try {
+          const o = await api("/api/duels/odds/" + encodeURIComponent(n));
+          $("#dOdds").innerHTML = `Ta puissance <b class="power">⚡ ${fmt(o.me)}</b> contre <b class="power">⚡ ${fmt(o.them)}</b> :
+            <b>${pctf(o.match)}</b> de chances de gagner le duel (${pctf(o.round)} par manche).`;
+        } catch (e) { $("#dOdds").textContent = e.message; }
+      }, 300);
+      $("#dTo").oninput = odds;
+      if (name) odds();
+    },
+    buttons: [
+      {label: "Annuler", onClick: d => d.close()},
+      {label: "⚔️ Défier", cls: "primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/duels/challenge", {to: $("#dTo").value.trim(), stake: Number($("#dStake").value) || 0});
+          d.close(); toast("Défi envoyé !", "good"); loadMe(); go("duels");
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+/* ================= ADMIN : signalements et liste noire ================= */
+function adminReports() {
+  const items = adminData.r.items;
+  $("#adminBody").innerHTML = items.length ? `
+    <p class="note" style="margin-bottom:12px">${items.length} vidéo(s) signalée(s), les plus signalées d'abord.
+      « Liste noire » retire la carte du jeu et rembourse les joueurs ; « Classer » efface les signalements.</p>
+    ${items.map(it => {
+      const v = it.card;
+      return `<article class="report">
+        <div class="rcard">${v ? cardHTML(v) : ""}</div>
+        <div style="min-width:0">
+          <div class="thead"><b>${esc(v ? v.title : it.id)}</b></div>
+          <div class="note">${v ? esc(v.channel) + " · " + fmt(v.views) + " vues" : "vidéo inconnue"}</div>
+          <div class="pbadges"><span class="tag no">${it.count} signalement(s)</span>
+            ${Object.entries(it.reasons).map(([k, n]) => `<span class="tag">${esc(k)} ×${n}</span>`).join("")}</div>
+          ${it.entries.filter(e => e.comment).map(e => `<p class="quote"><b>${esc(e.user)}</b> : ${esc(e.comment)}</p>`).join("")}
+          <div class="tfoot" style="margin-top:10px;justify-content:flex-start">
+            <a class="btn small" href="https://youtu.be/${encodeURIComponent(it.id)}" target="_blank" rel="noopener">▶ Voir</a>
+            <button class="btn small" data-dismiss="${esc(it.id)}">Classer sans suite</button>
+            <button class="btn small danger" data-bl="${esc(it.id)}">⛔ Liste noire</button>
+          </div>
+        </div>
+      </article>`;
+    }).join("")}`
+    : `<p class="empty"><b>Aucun signalement</b>Les vidéos signalées par les joueurs apparaîtront ici.</p>`;
+  $$("#adminBody [data-dismiss]").forEach(b => b.onclick = async () => {
+    try { await api("/api/admin/reports/dismiss", {id: b.dataset.dismiss}); toast("Classé sans suite."); loadAdmin(); loadCounts(); }
+    catch (e) { fail(e); }
+  });
+  $$("#adminBody [data-bl]").forEach(b => b.onclick = () => {
+    const it = items.find(x => x.id === b.dataset.bl);
+    blacklistDialog(it.card || {id: it.id, title: it.id}, loadAdmin);
+  });
+}
+
+function adminBlacklist() {
+  const rows = adminData.b.items;
+  $("#adminBody").innerHTML = `
+    <div class="panel">
+      <h2>Liste noire (${rows.length})</h2>
+      <p class="sub">Vidéos retirées du jeu. Les réintégrer les remet dans les tirages ; les exemplaires
+        retirés des collections (et remboursés) ne sont pas rendus.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Vidéo</th><th class="num">Vues</th><th>Raison</th><th>Par</th><th>Le</th><th></th></tr></thead>
+        <tbody>${rows.map(v => `<tr>
+          <td style="white-space:normal"><b>${esc(v.title)}</b><div class="note">${esc(v.channel)}</div></td>
+          <td class="num">${fmt(v.views)}</td><td style="white-space:normal">${esc(v.reason || "—")}</td>
+          <td>${esc(v.by)}</td><td>${dateOf(v.at)}</td>
+          <td><button class="btn small" data-unbl="${esc(v.id)}">Réintégrer</button></td></tr>`).join("")
+          || `<tr><td colspan="6" class="empty">Aucune vidéo en liste noire.</td></tr>`}</tbody></table></div>
+    </div>`;
+  $$("#adminBody [data-unbl]").forEach(b => b.onclick = () => unblacklist(b.dataset.unbl, loadAdmin));
+}
+
 /* ================= PROFIL ================= */
-let leaderTab = "cards";
+let leaderTab = "power";
 async function loadProfile(name) {
   try {
     const [p, lb] = await Promise.all([
@@ -857,29 +1455,65 @@ async function loadProfile(name) {
     renderProfile(p, lb);
   } catch (e) { fail(e); }
 }
+const LB = {
+  power: ["Puissance", r => "⚡ " + fmt(r.power)], cards: ["Cartes", r => nf(r.unique)],
+  duels: ["Duels", r => nf(r.won) + " V"], coins: ["Pièces", r => nf(r.coins)], packs: ["Packs", r => nf(r.packs)],
+};
 function renderProfile(p, lb) {
   const self = ME && p.name === ME.name;
+  profileName = self ? null : p.name;
   const pct = p.pool ? Math.round(p.unique/p.pool*100) : 0;
   const maxTier = Math.max(1, ...p.tiers.map(t => t.owned));
+  const total = p.won + p.lost;
+  const rel = {
+    friend: `<span class="tag ok">✓ Ami</span><button class="btn small" id="pTrade">🤝 Échanger</button>`,
+    sent: `<span class="tag">Demande envoyée</span>`,
+    received: `<button class="btn small primary" id="pAccept">Accepter sa demande d'ami</button>`,
+    none: `<button class="btn small primary" id="pAdd">➕ Ajouter en ami</button>`,
+  }[p.relation] || "";
   $("#profileBody").innerHTML = `
     <div class="panel">
       <div class="profhead">
-        <div class="avatar">${esc(p.avatar)}</div>
-        <div style="flex:1;min-width:220px">
-          <h1 style="font-size:1.9rem">${esc(p.username)} ${p.admin ? '<span class="tag ok">admin</span>' : ""}</h1>
-          <p class="sub" style="margin:4px 0 0">Inscrit le ${dateOf(p.created)} · ${p.listings} vente(s) en cours</p>
-          ${p.bio ? `<p style="margin:8px 0 0">${esc(p.bio)}</p>` : `<p class="sub" style="margin:8px 0 0">${self ? "Pas encore de bio." : ""}</p>`}
+        <div class="avwrap"><div class="avatar">${esc(p.avatar)}</div>${p.online && !self ? '<i class="online"></i>' : ""}</div>
+        <div style="flex:1;min-width:200px">
+          <h1 style="font-size:1.8rem">${esc(p.username)}</h1>
+          <div class="pbadges">
+            <span class="tag power">⚡ ${fmt(p.power)}</span>
+            ${p.guild ? `<span class="tag">${esc(p.guild.emblem || "🛡️")} ${esc(p.guild.name)} [${esc(p.guild.tag)}]</span>` : ""}
+            ${p.admin ? '<span class="tag ok">admin</span>' : ""}
+            ${!self ? `<span class="tag">${p.online ? "en ligne" : "hors ligne"}</span>` : ""}
+          </div>
+          ${p.bio ? `<p style="margin:10px 0 0">${esc(p.bio)}</p>` : self ? `<p class="sub" style="margin:10px 0 0">Pas encore de bio.</p>` : ""}
         </div>
-        ${self ? `<div class="row" style="gap:8px"><button class="btn" id="editProfile">Modifier</button>
-          <button class="btn" id="editPw">Mot de passe</button></div>` : `<button class="btn" id="backMe">Mon profil</button>`}
       </div>
-      <div class="stats" style="margin-top:16px">
+      <div class="relbar" style="margin-top:14px">
+        ${self ? `<button class="btn small" id="editProfile">✏️ Modifier</button>
+          <button class="btn small" id="editPw">🔑 Mot de passe</button>
+          ${ME.admin ? `<button class="btn small" id="pAdmin">🛠️ Administration</button>` : ""}`
+          : `${rel}<button class="btn small" id="pDuel">⚔️ Défier</button><button class="btn small" id="backMe">← Mon profil</button>`}
+      </div>
+      <div class="stats" style="margin-top:14px">
         <div class="stat"><b>${nf(p.unique)}</b><span>cartes uniques</span></div>
-        <div class="stat"><b>${nf(p.copies)}</b><span>exemplaires</span></div>
+        <div class="stat"><b>${pct} %</b><span>du catalogue</span></div>
         <div class="stat"><b>${nf(p.packs)}</b><span>packs ouverts</span></div>
-        <div class="stat"><b>${pct} %</b><span>du deck (${nf(p.pool)})</span></div>
+        <div class="stat"><b>${nf(p.won)}–${nf(p.lost)}</b><span>duels ${total ? "(" + Math.round(p.won / total * 100) + " %)" : ""}</span></div>
+        <div class="stat"><b>${nf(p.friends)}</b><span>amis</span></div>
         ${p.coins != null ? `<div class="stat"><b style="color:var(--gold)">${nf(p.coins)}</b><span>pièces</span></div>` : ""}
       </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>⭐ Vitrine</h2>
+      <p class="sub">${self ? "Jusqu'à 6 cartes de ton choix. Ouvre une carte et touche « Mettre en vitrine »."
+        : "Les cartes que " + esc(p.username) + " a choisi de montrer."}</p>
+      ${p.showcase.length ? `<div class="showcase">${p.showcase.map(cellHTML).join("")}</div>`
+        : `<p class="empty" style="padding:18px 0"><b>Vitrine vide</b>${self ? "Choisis tes plus belles cartes." : ""}</p>`}
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>💎 Les plus rares</h2><p class="sub">Les vidéos les plus vues de la collection.</p>
+      ${p.best.length ? `<div class="showcase">${p.best.map(cellHTML).join("")}</div>`
+        : `<p class="empty"><b>Collection vide</b>${self ? "Ouvre ton premier pack !" : ""}</p>`}
     </div>
 
     <div class="grid-2" style="margin-top:16px">
@@ -891,30 +1525,21 @@ function renderProfile(p, lb) {
             <span class="num">${nf(t.owned)}</span></div>`).join("")}</div>
       </div>
       <div class="panel">
-        <div class="row" style="margin-bottom:10px"><h2 style="flex:1">Classement</h2>
-          <div class="segmented" id="lbTabs">
-            <button data-l="cards" aria-pressed="${leaderTab==="cards"}">Cartes</button>
-            <button data-l="coins" aria-pressed="${leaderTab==="coins"}">Pièces</button>
-            <button data-l="packs" aria-pressed="${leaderTab==="packs"}">Packs</button>
-          </div></div>
-        <div class="tablewrap"><table><tbody id="lbBody"></tbody></table></div>
+        <h2>Classement</h2>
+        <div class="segmented scroll" id="lbTabs" style="margin-top:8px">${Object.entries(LB).map(([k, [label]]) =>
+          `<button data-l="${k}" aria-pressed="${leaderTab === k}">${label}</button>`).join("")}</div>
+        <div class="tablewrap"><table style="min-width:0"><tbody id="lbBody"></tbody></table></div>
       </div>
-    </div>
-
-    <div class="panel" style="margin-top:16px">
-      <h2>Plus belles cartes</h2><p class="sub">Les vidéos les plus vues de la collection.</p>
-      ${p.best.length ? `<div class="cgrid">${p.best.map(v => `<div class="cell">${v.count > 1 ? `<span class="count">×${v.count}</span>` : ""}${cardHTML(v)}</div>`).join("")}</div>`
-        : `<p class="empty"><b>Collection vide</b>${self ? "Ouvre ton premier pack !" : ""}</p>`}
     </div>`;
 
   const renderLb = () => {
     const rows = lb[leaderTab] || [];
-    const val = r => leaderTab === "cards" ? r.unique : leaderTab === "coins" ? r.coins : r.packs;
+    const val = LB[leaderTab][1];
     $("#lbBody").innerHTML = rows.map((r, i) => `
       <tr><td class="rank ${i < 3 ? "top" : ""}">${i+1}</td>
-        <td><button class="btn small" data-prof="${esc(r.name)}" style="border:0;background:none;padding:0;font-weight:700">
+        <td><button class="linkish" data-prof="${esc(r.name)}" style="background:none;border:0;padding:0;font-weight:700;color:var(--ink)">
           <span class="avatar xs" style="display:inline-grid;vertical-align:middle">${esc(r.avatar)}</span> ${esc(r.username)}</button></td>
-        <td class="num">${nf(val(r))}</td></tr>`).join("")
+        <td class="num">${val(r)}</td></tr>`).join("")
       || `<tr><td class="empty">Pas encore de joueurs classés.</td></tr>`;
     $$("#lbBody [data-prof]").forEach(b => b.onclick = () => loadProfile(b.dataset.prof));
   };
@@ -924,9 +1549,24 @@ function renderProfile(p, lb) {
     $$("#lbTabs button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
     renderLb();
   });
-  if ($("#backMe")) $("#backMe").onclick = () => loadProfile();
-  if ($("#editProfile")) $("#editProfile").onclick = () => editProfileDialog(p);
-  if ($("#editPw")) $("#editPw").onclick = passwordDialog;
+  const on = (id, fn) => { if ($(id)) $(id).onclick = fn; };
+  on("#backMe", () => loadProfile());
+  on("#editProfile", () => editProfileDialog(p));
+  on("#editPw", passwordDialog);
+  on("#pAdmin", () => go("admin"));
+  on("#pDuel", () => duelDialog(p.name));
+  on("#pTrade", () => tradeBuilder({to: p.name}));
+  on("#pAdd", async () => {
+    try { await api("/api/friends/request", {name: p.name}); toast("Demande d'ami envoyée.", "good"); loadProfile(p.name); }
+    catch (e) { fail(e); }
+  });
+  on("#pAccept", async () => {
+    try {
+      await api("/api/friends/respond", {name: p.name, accept: true});
+      toast("Vous êtes maintenant amis !", "good"); FRIENDS = []; loadProfile(p.name); loadCounts();
+    } catch (e) { fail(e); }
+  });
+  window.scrollTo({top: 0});
 }
 
 function editProfileDialog(p) {
@@ -989,6 +1629,8 @@ async function loadAdmin() {
     else if (adminTab === "sources") { adminData.s = await api("/api/admin/sources"); adminSources(); }
     else if (adminTab === "auctions") { adminData.a = await api("/api/admin/auctions"); adminAuctions(); }
     else if (adminTab === "guilds") { adminData.g = await api("/api/admin/guilds"); adminGuilds(); }
+    else if (adminTab === "reports") { adminData.r = await api("/api/admin/reports"); adminReports(); }
+    else if (adminTab === "blacklist") { adminData.b = await api("/api/admin/blacklist"); adminBlacklist(); }
   } catch (e) { fail(e); }
 }
 
@@ -1006,6 +1648,8 @@ function adminOverview() {
         <div class="stat"><b>${nf(o.escrow)}</b><span>pièces bloquées</span></div>
         <div class="stat"><b>${nf(o.live_auctions)}</b><span>enchères en cours</span></div>
         <div class="stat"><b>${nf(o.guilds)}</b><span>guildes</span></div>
+        <div class="stat"><b style="color:var(--bad)">${nf(o.reports)}</b><span>vidéos signalées</span></div>
+        <div class="stat"><b>${nf(o.blacklisted)}</b><span>en liste noire</span></div>
         <div class="stat"><b>${nf(o.channels)}</b><span>chaînes suivies</span></div>
       </div>
     </div>
@@ -1251,7 +1895,8 @@ async function loadMeta() {
   try {
     META = await api("/api/meta");
     TIERS = META.tiers;
-    $("#heroInterval").textContent = clock(META.pack_interval);
+    const iv = META.pack_interval;
+    $("#heroInterval").textContent = iv % 60 === 0 ? (iv / 60) + (iv === 60 ? " minute" : " minutes") : clock(iv);
     $("#heroMax").textContent = META.pack_max;
     $("#packPrice").textContent = nf(META.pack_price);
     if (META.kofi) $$("a[href*='ko-fi.com']").forEach(a => { a.href = META.kofi; });
@@ -1275,6 +1920,7 @@ async function loadMeta() {
   else { try { const v = localStorage.getItem("tp:view"); if (v && LOADERS[v] && (v !== "admin" || (ME && ME.admin))) start = v; } catch (e) {} }
   go(start);
   setInterval(loadMeta, 60000);
-  setInterval(() => { loadMe(); if (view === "market") loadMarket(); }, 30000);
+  loadCounts();
+  setInterval(() => { loadMe(); loadCounts(); if (view === "market") loadMarket(); }, 30000);
 })();
 })();

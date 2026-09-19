@@ -216,6 +216,23 @@ async def cards_for(ids):
     return {vid: card(vid, h) for vid, h in zip(ids, await pipe.execute()) if h}
 
 
+_power: dict[str, tuple[float, int]] = {}
+
+
+async def power_of(user, fresh=False):
+    """Puissance : total des vues des cartes uniques d'une collection (hors liste noire)."""
+    hit = _power.get(user)
+    if hit and not fresh and time.time() - hit[0] < 60:
+        return hit[1]
+    ids = await r.hkeys(f"coll:{user}")
+    total = 0
+    for i in range(0, len(ids), 500):
+        scores = await r.zmscore("videos:by_views", ids[i:i + 500])
+        total += sum(int(v) for v in scores if v)
+    _power[user] = (time.time(), total)
+    return total
+
+
 def client_ip(request: Request):
     # uvicorn tourne avec --proxy-headers : client.host est déjà l'IP réelle derrière le proxy.
     return request.client.host if request.client else "?"
@@ -246,7 +263,14 @@ async def current_user(request: Request) -> str:
         raise HTTPException(401, "Non connecté")
     if await r.hget(f"user:{user}", "banned") == "1":
         raise HTTPException(403, "Ce compte est suspendu.")
+    now = time.time()
+    if now - _seen.get(user, 0) > 60:          # une écriture par minute et par joueur, pas plus
+        _seen[user] = now
+        await r.set(f"seen:{user}", int(now), ex=30 * 86400)
     return user
+
+
+_seen: dict[str, float] = {}
 
 
 async def optional_user(request: Request):
@@ -337,11 +361,16 @@ async def trim_history():
             await pipe.execute()
 
 
+PERIODIC = []          # tâches ajoutées par les autres modules (expiration des échanges, duels…)
+
+
 async def settler_loop():
     while True:
         try:
             if await r.set("lock:settler", 1, ex=20, nx=True):
                 await settle_due()
+                for task in PERIODIC:
+                    await task()
         except asyncio.CancelledError:
             raise
         except Exception as e:  # la boucle ne doit jamais mourir
@@ -846,8 +875,30 @@ async def profile_of(name, viewer=None):
     for c in cards:
         counts[c["tier"]] += 1
     total = await r.zcard("videos:by_views")
+    by_id = {c["id"]: c for c in cards}
+    showcase = [by_id[v] for v in (u.get("showcase") or "").split(",") if v in by_id]
+    relation = "self"
+    if viewer and viewer != name:
+        if await r.sismember(f"friends:{viewer}", name):
+            relation = "friend"
+        elif await r.zscore(f"freq:out:{viewer}", name) is not None:
+            relation = "sent"
+        elif await r.zscore(f"freq:in:{viewer}", name) is not None:
+            relation = "received"
+        else:
+            relation = "none"
+    gid = u.get("guild")
+    guild = None
+    if gid:
+        g = await r.hmget(f"guild:{gid}", "name", "tag", "emblem")
+        if g[0]:
+            guild = {"id": gid, "name": g[0], "tag": g[1], "emblem": g[2]}
+    seen = int(await r.get(f"seen:{name}") or 0)
     return {
         "name": name, "username": u.get("display", name), "avatar": u.get("avatar") or "🎴",
+        "showcase": showcase, "power": await power_of(name), "relation": relation, "guild": guild,
+        "won": int(u.get("duels_won", 0) or 0), "lost": int(u.get("duels_lost", 0) or 0),
+        "friends": await r.scard(f"friends:{name}"), "online": time.time() - seen < 300,
         "bio": u.get("bio", ""), "created": int(u.get("created", 0) or 0),
         "packs": int(u.get("packs", 0) or 0), "unique": len(cards),
         "copies": sum(c["count"] for c in cards), "pool": total,
@@ -894,15 +945,18 @@ async def leaderboard(user=Depends(current_user)):
     names = sorted(await r.smembers("users"))
     pipe = r.pipeline()
     for n in names:
-        pipe.hmget(f"user:{n}", "display", "avatar", "packs", "coins")
+        pipe.hmget(f"user:{n}", "display", "avatar", "packs", "coins", "duels_won")
         pipe.hlen(f"coll:{n}")
     res = await pipe.execute()
     rows = []
     for i, n in enumerate(names):
-        display, avatar, packs, coins = res[2 * i]
+        display, avatar, packs, coins, won = res[2 * i]
         rows.append({"name": n, "username": display or n, "avatar": avatar or "🎴",
-                     "packs": int(packs or 0), "coins": int(coins or 0), "unique": res[2 * i + 1]})
+                     "packs": int(packs or 0), "coins": int(coins or 0), "unique": res[2 * i + 1],
+                     "power": await power_of(n), "won": int(won or 0)})
     data = {
+        "power": sorted(rows, key=lambda x: -x["power"])[:20],
+        "duels": sorted(rows, key=lambda x: -x["won"])[:20],
         "cards": sorted(rows, key=lambda x: -x["unique"])[:20],
         "coins": sorted(rows, key=lambda x: -x["coins"])[:20],
         "packs": sorted(rows, key=lambda x: -x["packs"])[:20],
@@ -1225,6 +1279,7 @@ async def admin_overview():
         "sources": await r.zcard("sources"), "packs": packs, "coins": coins,
         "live_auctions": len(live), "escrow": escrow, "done_auctions": await r.zcard("auctions:done"),
         "guilds": await r.zcard("guilds"),
+        "reports": await r.zcard("reports"), "blacklisted": await r.scard("blacklist"),
         "heartbeat": await r.get("worker:heartbeat"), "worker_status": await r.get("worker:status"),
         "worker_stats": await r.hgetall("worker:stats"),
         "channels": await r.zcard("channels"), "queued": await r.scard("queue:related"),
@@ -1437,3 +1492,7 @@ async def admin_broadcast(body: BroadcastRequest, admin=Depends(require_admin)):
         await notify(name, "admin", text)
     log.info("Admin %s : annonce « %s »", admin, text)
     return {"ok": True}
+
+
+# Amis, vitrine, explorateur, échanges, duels, signalements : voir social.py.
+import social  # noqa: E402,F401
