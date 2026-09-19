@@ -7,94 +7,46 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎴</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
 <style>
-:root{
-  --bg:#EEF0FA; --table:#E1E4F4; --ink:#1A1C3A; --muted:#5B5F85; --line:#C9CDE6; --panel:#FFFFFF;
-  --c:#8C97AB; --r:#2F8FE0; --e:#9B4DE8; --l:#E0A020; --m:#E8457A;
-  --accent:#E8243C;
-  --display:"Bricolage Grotesque", "Arial Rounded MT Bold", system-ui, sans-serif;
-  --body:"Figtree", "Segoe UI", system-ui, sans-serif;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#12152E; --table:#1A1E40; --ink:#EDEEFF; --muted:#9EA3CF; --line:#2E3463; --panel:#20254D;
-    --c:#A3AEC2; --r:#4AA8F5; --e:#B777F7; --l:#F5C04A; --m:#FF6B9A; --accent:#FF3B52;
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#12152E; --table:#1A1E40; --ink:#EDEEFF; --muted:#9EA3CF; --line:#2E3463; --panel:#20254D;
-  --c:#A3AEC2; --r:#4AA8F5; --e:#B777F7; --l:#F5C04A; --m:#FF6B9A; --accent:#FF3B52;
-}
-
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:var(--body);display:grid;place-items:center;padding:20px}
-:focus-visible{outline:3px solid var(--r);outline-offset:3px}
-.box{width:min(400px,100%);display:flex;flex-direction:column;align-items:center;gap:22px}
-.pack{width:120px;height:170px;border-radius:12px;position:relative;background:linear-gradient(135deg,#FF2D46 0%,#C2123A 45%,#7A0D5E 100%);box-shadow:0 18px 40px -12px rgba(120,10,50,.55);display:grid;place-items:center;transform:rotate(-6deg)}
-.pack::after{content:"";position:absolute;left:0;right:0;top:14px;border-top:2px dashed rgba(255,255,255,.55)}
-.pack span{width:52px;height:36px;background:#fff;border-radius:10px;display:grid;place-items:center}
-.pack i{border-left:15px solid #E8243C;border-top:9px solid transparent;border-bottom:9px solid transparent;margin-left:4px}
-h1{font-family:var(--display);font-weight:800;font-size:2.4rem;margin:0;letter-spacing:-.02em}
-form{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:14px}
+body{display:grid;place-items:center;padding:24px 16px}
+.box{width:min(420px,100%);display:flex;flex-direction:column;align-items:center;gap:20px}
+.box .pack{width:126px;height:178px;transform:rotate(-6deg);gap:0}
+.box .pack:hover{transform:rotate(-6deg)}
+.box h1{font-size:2.5rem;font-weight:800}
+.box .sub{text-align:center;margin:-10px 0 0}
+form{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:var(--rad);padding:20px;
+  display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-lg)}
 .switch{display:flex;border-bottom:2px solid var(--line)}
-.switch button{flex:1;background:none;border:0;padding:8px;font:inherit;font-weight:700;color:var(--muted);border-bottom:3px solid transparent;margin-bottom:-2px;cursor:pointer}
+.switch button{flex:1;background:none;border:0;padding:9px;font-weight:700;color:var(--muted);
+  border-bottom:3px solid transparent;margin-bottom:-2px}
 .switch button[aria-selected="true"]{color:var(--ink);border-color:var(--accent)}
-label{display:flex;flex-direction:column;gap:5px;font-weight:600;font-size:.92rem}
-input{font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
-input:focus{border-color:var(--ink);outline:none}
-.hint{font-weight:400;color:var(--muted);font-size:.82rem}
-.submit{background:var(--accent);color:#fff;border:0;border-radius:999px;padding:12px;font:inherit;font-weight:700;cursor:pointer}
-.submit:disabled{opacity:.6;cursor:wait}
-.err{color:var(--accent);font-weight:600;font-size:.9rem;min-height:1.2em;margin:0}
-[hidden]{display:none!important}
+.err{color:var(--bad);font-weight:700;font-size:.9rem;min-height:1.2em;margin:0}
+.facts{display:flex;gap:16px;color:var(--muted);font-size:.85rem;flex-wrap:wrap;justify-content:center}
+.facts b{color:var(--ink)}
 </style>
 </head>
 <body>
 <main class="box">
-  <div class="pack" aria-hidden="true"><span><i></i></span></div>
+  <div class="pack" aria-hidden="true"><span class="play"><i></i></span></div>
   <h1>TubePacks</h1>
+  <p class="sub note">Ouvre un pack toutes les 10 minutes, collectionne les vidéos YouTube françaises,
+     revends tes doublons à l'hôtel des ventes.</p>
   <form id="f" novalidate>
     <div class="switch" role="tablist">
       <button type="button" role="tab" aria-selected="true" data-mode="login">Se connecter</button>
       <button type="button" role="tab" aria-selected="false" data-mode="register">Créer un compte</button>
     </div>
-    <label>Pseudo<input name="username" autocomplete="username" maxlength="24"></label>
-    <label>Mot de passe<input name="password" type="password" autocomplete="current-password">
+    <label class="field">Pseudo<input type="text" name="username" autocomplete="username" maxlength="24"></label>
+    <label class="field">Mot de passe<input name="password" type="password" autocomplete="current-password">
       <span class="hint" id="pwHint" hidden>8 caractères minimum.</span></label>
-    <label id="inviteRow" hidden>Code d'invitation<input name="invite" autocomplete="off"></label>
+    <label class="field" id="inviteRow" hidden>Code d'invitation<input type="text" name="invite" autocomplete="off"></label>
     <p class="err" id="err" role="alert"></p>
-    <button class="submit" id="go">Se connecter</button>
+    <button class="btn primary" id="go" style="padding:12px">Se connecter</button>
   </form>
+  <div class="facts" id="facts"></div>
 </main>
-<script>
-(function(){
-let mode="login",inviteRequired=false;
-const f=document.getElementById("f"),err=document.getElementById("err"),go=document.getElementById("go");
-fetch("/api/meta").then(r=>r.json()).then(m=>{inviteRequired=m.invite_required;setMode(mode)}).catch(()=>{});
-function setMode(m){
-  mode=m;
-  document.querySelectorAll(".switch button").forEach(b=>b.setAttribute("aria-selected",b.dataset.mode===m));
-  go.textContent=m==="login"?"Se connecter":"Créer mon compte";
-  f.password.autocomplete=m==="login"?"current-password":"new-password";
-  document.getElementById("pwHint").hidden=m==="login";
-  document.getElementById("inviteRow").hidden=!(m==="register"&&inviteRequired);
-  err.textContent="";
-}
-document.querySelectorAll(".switch button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
-f.onsubmit=async e=>{
-  e.preventDefault();err.textContent="";
-  const body={username:f.username.value.trim(),password:f.password.value,invite:f.invite.value.trim()};
-  if(!body.username||!body.password){err.textContent="Renseigne ton pseudo et ton mot de passe.";return}
-  go.disabled=true;
-  try{
-    const r=await fetch(mode==="login"?"/api/login":"/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:"Pseudo ou mot de passe invalide.");
-    location.href="/";
-  }catch(e2){err.textContent=e2.message}finally{go.disabled=false}
-};
-})();
-</script>
+<script src="/static/login.js"></script>
 </body>
 </html>
