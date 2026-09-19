@@ -4,7 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TubePacks</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎴</text></svg>">
+<meta name="theme-color" content="#14162F">
+<meta name="description" content="Ouvre des packs, collectionne les vidéos YouTube françaises et revends tes doublons aux enchères.">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="TubePacks">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -19,6 +27,7 @@
       <button data-view="packs" aria-current="true">🎁 Packs</button>
       <button data-view="coll">🗂️ Collection</button>
       <button data-view="market">⚖️ Enchères</button>
+      <button data-view="guild">🛡️ Guilde</button>
       <button data-view="profile">👤 Profil</button>
       <button data-view="admin" hidden>🛠️ Admin</button>
     </nav>
@@ -26,6 +35,8 @@
       <span class="pill coins" title="Pièces"><span aria-hidden="true">🪙</span><span id="wCoins">0</span></span>
       <span class="pill tick" title="Packs disponibles"><span aria-hidden="true">🎁</span><span id="wPacks">0</span><small id="wTimer"></small></span>
       <button class="iconbtn" id="bell" aria-label="Notifications">🔔<span class="dot" id="bellDot" hidden>0</span></button>
+      <a class="iconbtn kofi" id="kofi" href="https://ko-fi.com/eirblast" target="_blank" rel="noopener"
+         aria-label="Soutenir TubePacks sur Ko-fi" title="Soutenir TubePacks sur Ko-fi">☕</a>
       <button class="iconbtn" id="themeBtn" aria-label="Changer de thème">🌗</button>
       <button class="iconbtn" id="logout" aria-label="Se déconnecter">⏻</button>
     </div>
@@ -111,6 +122,11 @@
     <div class="agrid" id="agrid"></div>
   </section>
 
+  <!-- ====== GUILDE ====== -->
+  <section id="view-guild" hidden>
+    <div id="guildBody"></div>
+  </section>
+
   <!-- ====== PROFIL ====== -->
   <section id="view-profile" hidden>
     <div id="profileBody"></div>
@@ -126,6 +142,7 @@
         <button data-a="settings">Réglages</button>
         <button data-a="sources">Sources</button>
         <button data-a="auctions">Enchères</button>
+        <button data-a="guilds">Guildes</button>
       </div>
     </div>
     <div id="adminBody"></div>
@@ -134,6 +151,26 @@
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- Bandeau d'installation : proposé une fois, refusable définitivement. -->
+<div class="banner" id="installBanner" hidden role="dialog" aria-labelledby="installTitle">
+  <img src="/static/icon-192.png" alt="" width="46" height="46">
+  <div class="btext">
+    <b id="installTitle">Installe TubePacks</b>
+    <span id="installHow">Ajoute l'app à ton écran d'accueil : elle s'ouvre en plein écran, sans barre d'adresse.</span>
+  </div>
+  <div class="bactions">
+    <button class="btn small" id="installLater">Plus tard</button>
+    <button class="btn small primary" id="installGo">Ajouter</button>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  <a href="https://ko-fi.com/eirblast" target="_blank" rel="noopener" class="kofibtn">
+    <span aria-hidden="true">☕</span> Soutenir TubePacks sur Ko-fi
+  </a>
+  <p class="note">TubePacks est gratuit et sans publicité. Un café aide à payer le serveur.</p>
+</footer>
 
 <dialog id="modal">
   <div class="head"><h3 id="modalTitle">…</h3><button class="iconbtn" id="modalX" aria-label="Fermer">✕</button></div>

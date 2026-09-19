@@ -10,7 +10,10 @@ const CAT = {
 };
 const DOT = {M:"--m", L:"--l", E:"--e", R:"--r", C:"--c"};
 
-let META = {min_views:10000, tiers:[], pack_interval:600, pack_max:12, pack_price:250, fee:5, bid_step:5, avatars:["🎴"], durations:["1h"]};
+let META = {min_views:10000, tiers:[], pack_interval:600, pack_max:12, pack_price:250, fee:5,
+  bid_step:5, avatars:["🎴"], emblems:["🛡️"], durations:["1h"], guild_cost:1000, guild_max:20,
+  kofi:"https://ko-fi.com/eirblast"};
+const packMax = () => (ME && ME.pack_max) || META.pack_max;
 let ME = null, TIERS = [];
 let view = "packs";
 let coll = {cards:[], tiers:[], dupes:0, scrap:0}, collFilter = "all", collShown = 60;
@@ -60,7 +63,11 @@ async function api(path, body) {
   const res = await fetch(path, opts);
   if (res.status === 401) { location.href = "/login"; throw new Error("401"); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Erreur serveur (" + res.status + ")");
+  if (!res.ok) {
+    const err = new Error(typeof data.detail === "string" ? data.detail : "Erreur serveur (" + res.status + ")");
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 const fail = e => { if (e.message !== "401") toast(e.message, "bad"); };
@@ -111,7 +118,7 @@ function renderWallet() {
   if (!ME) return;
   $("#wCoins").textContent = nf(ME.coins);
   $("#wPacks").textContent = ME.tickets;
-  $("#wTimer").textContent = ME.tickets >= META.pack_max ? "· plein" : "· " + clock(ME.next_pack);
+  $("#wTimer").textContent = ME.tickets >= packMax() ? "· plein" : "· " + clock(ME.next_pack);
   const pc = $("#packClock");
   if (pc) pc.textContent = clock(ME.next_pack);
   $("#bellDot").hidden = !ME.notifs;
@@ -130,7 +137,7 @@ async function loadMe() {
 
 // Décompte local : on ne recontacte le serveur qu'au moment où un pack devient disponible.
 setInterval(() => {
-  if (ME && ME.tickets < META.pack_max) {
+  if (ME && ME.tickets < packMax()) {
     ME.next_pack -= 1;
     if (ME.next_pack <= 0) { loadMe().then(() => { if (view === "packs") renderPackTable(); }); }
     else renderWallet();
@@ -178,13 +185,14 @@ const LOADERS = {
   packs: () => { renderPackTable(); loadColl(); },
   coll: () => loadColl(),
   market: () => loadMarket(),
+  guild: () => loadGuild(),
   profile: () => loadProfile(),
   admin: () => loadAdmin(),
 };
 function go(name) {
   view = name;
   $$("#nav button").forEach(b => b.setAttribute("aria-current", String(b.dataset.view === name)));
-  ["packs","coll","market","profile","admin"].forEach(v => { $("#view-" + v).hidden = v !== name; });
+  ["packs","coll","market","guild","profile","admin"].forEach(v => { $("#view-" + v).hidden = v !== name; });
   try { localStorage.setItem("tp:view", name); } catch (e) {}
   (LOADERS[name] || (() => {}))();
   window.scrollTo({top:0, behavior:"instant"});
@@ -202,7 +210,7 @@ function renderPackTable() {
       </button>
     </div>
     ${ready
-      ? `<p class="hint">Clique sur le pack pour le déchirer.${ME.tickets < META.pack_max
+      ? `<p class="hint">Clique sur le pack pour le déchirer.${ME.tickets < packMax()
           ? ` Prochain pack offert dans <span class="countdown" id="packClock">${clock(ME.next_pack)}</span>.` : " Ta réserve est pleine."}</p>`
       : `<p class="hint">Réserve vide. Prochain pack dans <span class="countdown" id="packClock">${clock(ME ? ME.next_pack : 0)}</span>,
           ou achète-en un pour ${nf(META.pack_price)} 🪙.</p>`}`;
@@ -216,9 +224,17 @@ async function openPack() {
   let data;
   try {
     [data] = await Promise.all([api("/api/packs/open", {}), new Promise(r => setTimeout(r, 520))]);
-  } catch (e) { fail(e); loadMe().then(renderPackTable); return; }
+  } catch (e) {
+    loadMe().then(renderPackTable);
+    if (e.status === 428) botCheck(() => { go("packs"); openPack(); });
+    else fail(e);
+    return;
+  }
 
-  if (ME) { ME.coins = data.coins; ME.tickets = data.tickets; ME.next_pack = data.next_pack; ME.packs += 1; renderWallet(); }
+  if (ME) {
+    ME.coins = data.coins; ME.tickets = data.tickets; ME.next_pack = data.next_pack;
+    ME.pack_max = data.pack_max; ME.packs += 1; renderWallet();
+  }
   const hand = data.cards;
   $("#table").innerHTML = `
     <div class="hand">${hand.map((v, i) => `
@@ -230,7 +246,8 @@ async function openPack() {
       <button class="btn" id="flipAll">Tout retourner</button>
       <button class="btn primary" id="again">${ME && ME.tickets > 0 ? "Ouvrir un autre pack (" + ME.tickets + ")" : "Retour"}</button>
     </div>
-    <p class="hint">+${data.bonus} 🪙 pour cette ouverture.</p>`;
+    <p class="hint">+${data.bonus} 🪙 pour cette ouverture${data.guild_bonus
+      ? ` (dont +${data.guild_bonus} % grâce à ta guilde)` : ""}.</p>`;
   const slots = $$(".slot");
   slots.forEach((s, i) => {
     const flip = e => {
@@ -253,7 +270,7 @@ async function openPack() {
 $("#buyPack").onclick = async () => {
   try {
     const d = await api("/api/packs/buy", {});
-    if (ME) { ME.coins = d.coins; ME.tickets = d.tickets; ME.next_pack = d.next_pack; renderWallet(); }
+    if (ME) { ME.coins = d.coins; ME.tickets = d.tickets; ME.next_pack = d.next_pack; ME.pack_max = d.pack_max; renderWallet(); }
     toast("Pack acheté pour " + nf(META.pack_price) + " pièces.", "good");
     if (view === "packs") renderPackTable();
   } catch (e) { fail(e); }
@@ -499,6 +516,336 @@ async function cancelListing(a) {
   } catch (e) { fail(e); }
 }
 
+/* ================= APPLICATION INSTALLABLE ================= */
+// Service worker : démarrage instantané et écran « hors ligne » propre.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const iOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+let installEvent = null;
+
+function installDismissed() {
+  try { return localStorage.getItem("tp:install") === "non"; } catch (e) { return false; }
+}
+function showInstall(force) {
+  if (standalone() || (!force && installDismissed())) return;
+  const b = $("#installBanner");
+  if (iOS && !installEvent) {
+    $("#installHow").textContent = "Sur iPhone : bouton Partager, puis « Sur l'écran d'accueil ».";
+    $("#installGo").textContent = "J'ai compris";
+  }
+  b.hidden = false;
+}
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  installEvent = e;
+  showInstall(false);
+});
+window.addEventListener("appinstalled", () => {
+  $("#installBanner").hidden = true;
+  toast("TubePacks est installé. À bientôt !", "good");
+});
+$("#installLater").onclick = () => {
+  $("#installBanner").hidden = true;
+  try { localStorage.setItem("tp:install", "non"); } catch (e) {}
+};
+$("#installGo").onclick = async () => {
+  $("#installBanner").hidden = true;
+  if (!installEvent) return;                       // iOS : la marche à suivre était affichée
+  installEvent.prompt();
+  const { outcome } = await installEvent.userChoice.catch(() => ({outcome: "dismissed"}));
+  if (outcome !== "accepted") { try { localStorage.setItem("tp:install", "non"); } catch (e) {} }
+  installEvent = null;
+};
+// Ni beforeinstallprompt ni iOS (Firefox, Safari bureau) : on propose quand même, une fois.
+setTimeout(() => { if (!installEvent && !standalone() && iOS) showInstall(false); }, 8000);
+
+/* ================= VÉRIFICATION ANTI-ROBOT ================= */
+// Le serveur renvoie 428 quand il veut revoir un humain. On repropose l'action ensuite.
+function botCheck(retry) {
+  modal({
+    title: "Petite vérification",
+    body: `<p class="note">Une question au hasard, le temps de s'assurer que tu n'es pas un script.</p>
+      <div class="challenge">
+        <div class="q loading" id="cQ">Chargement…</div>
+        <label class="field">Ta réponse<input type="text" id="cA" autocomplete="off" inputmode="text"></label>
+      </div>`,
+    onOpen: async () => {
+      try {
+        const c = await api("/api/challenge");
+        $("#cQ").textContent = c.question;
+        $("#cQ").classList.remove("loading");
+        $("#cQ").dataset.id = c.id;
+        $("#cA").focus();
+        $("#cA").onkeydown = e => { if (e.key === "Enter") $$("#modalFoot .btn.primary")[0].click(); };
+      } catch (e) { $("#cQ").textContent = "Impossible de charger la question."; }
+    },
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Valider", cls:"primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/verify", {id: $("#cQ").dataset.id, answer: $("#cA").value});
+          d.close();
+          toast("Merci !", "good");
+          if (retry) retry();
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+/* ================= GUILDE ================= */
+let guildList = null, guildBrowse = false;
+
+async function loadGuild() {
+  try {
+    const d = await api("/api/guild");
+    if (d.guild && !guildBrowse) { renderGuild(d.guild); return; }
+    guildList = await api("/api/guilds");
+    renderGuildList(d.guild);
+  } catch (e) { fail(e); }
+}
+
+function guildCardHTML(g, mine) {
+  return `<article class="gcard ${g.id === mine ? "mine" : ""}">
+    <div class="emblem sm">${esc(g.emblem)}</div>
+    <div class="gi">
+      <div class="gn"><span class="lvl">${g.level}</span> ${esc(g.name)} <span class="gtag">[${esc(g.tag)}]</span></div>
+      <div class="gm">${g.count}/${g.max} membres · ${nf(g.xp)} XP${g.motd ? " · " + esc(g.motd) : ""}</div>
+    </div>
+    ${g.id === mine ? '<span class="tag ok">ta guilde</span>'
+      : g.open && g.count < g.max ? `<button class="btn small primary" data-join="${esc(g.id)}">Rejoindre</button>`
+      : `<span class="tag">${g.count >= g.max ? "complète" : "fermée"}</span>`}
+  </article>`;
+}
+
+function renderGuildList(mine) {
+  const items = guildList.items;
+  $("#guildBody").innerHTML = `
+    <div class="hero">
+      <div><h1>Guildes</h1><p>Rejoins une guilde : chaque pack ouvert par un membre la fait monter de niveau,
+        et chaque niveau rapporte des pièces en plus à tout le monde.</p></div>
+    </div>
+    ${mine ? `<div class="row" style="margin-bottom:14px"><button class="btn" id="backGuild">← Revenir à ma guilde</button></div>` : ""}
+    <div class="panel row" style="margin-bottom:16px">
+      <input type="search" id="gSearch" placeholder="Chercher une guilde…" style="width:min(260px,60vw)">
+      <span class="spacer"></span>
+      ${mine ? "" : `<button class="btn primary" id="newGuild">Fonder une guilde · ${nf(META.guild_cost)} 🪙</button>`}
+    </div>
+    <div class="glist" id="glist">${items.length ? items.map(g => guildCardHTML(g, mine)).join("")
+      : `<p class="empty" style="grid-column:1/-1"><b>Aucune guilde</b>Sois le premier à en fonder une.</p>`}</div>`;
+  $("#gSearch").oninput = debounce(async () => {
+    guildList = await api("/api/guilds?q=" + encodeURIComponent($("#gSearch").value.trim()));
+    $("#glist").innerHTML = guildList.items.length
+      ? guildList.items.map(g => guildCardHTML(g, mine)).join("")
+      : `<p class="empty" style="grid-column:1/-1"><b>Aucun résultat</b></p>`;
+    bindJoin();
+  }, 300);
+  if ($("#newGuild")) $("#newGuild").onclick = createGuildDialog;
+  if ($("#backGuild")) $("#backGuild").onclick = () => { guildBrowse = false; loadGuild(); };
+  bindJoin();
+}
+function bindJoin() {
+  $$("#glist [data-join]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await api("/api/guild/join", {id: b.dataset.join});
+      toast("Bienvenue dans la guilde !", "good");
+      guildBrowse = false; loadGuild(); loadMe();
+    } catch (e) { b.disabled = false; fail(e); }
+  });
+}
+
+function createGuildDialog() {
+  let emblem = META.emblems[0];
+  modal({
+    title: "Fonder une guilde",
+    body: `<p class="note">Coût : ${nf(META.guild_cost)} 🪙. Tu en seras le chef, et tu pourras
+        recruter jusqu'à ${META.guild_max} membres.</p>
+      <label class="field">Nom<input type="text" id="gName" maxlength="24" placeholder="Les Collectionneurs">
+        <span class="hint">3 à 24 caractères.</span></label>
+      <label class="field">Tag<input type="text" id="gTag" maxlength="5" placeholder="COLL">
+        <span class="hint">2 à 5 lettres ou chiffres, sans accent.</span></label>
+      <label class="field">Emblème
+        <div class="avatars" id="gEm">${META.emblems.map((e, i) =>
+          `<button type="button" data-e="${esc(e)}" aria-pressed="${i === 0}">${esc(e)}</button>`).join("")}</div></label>`,
+    onOpen: () => $$("#gEm button").forEach(b => b.onclick = () => {
+      emblem = b.dataset.e;
+      $$("#gEm button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    }),
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Fonder", cls:"primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/guild/create", {name:$("#gName").value, tag:$("#gTag").value, emblem});
+          d.close(); toast("Guilde fondée !", "good");
+          guildBrowse = false; loadGuild(); loadMe();
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+function renderGuild(g) {
+  const me = ME ? ME.name : "";
+  const chief = g.my_role === "chef", staff = chief || g.my_role === "officier";
+  const span = g.next_xp ? g.next_xp - g.prev_xp : 1;
+  const pct = g.next_xp ? Math.min(100, Math.round((g.xp - g.prev_xp) / span * 100)) : 100;
+  $("#guildBody").innerHTML = `
+    <div class="panel">
+      <div class="ghead">
+        <div class="emblem">${esc(g.emblem)}</div>
+        <div style="flex:1;min-width:220px">
+          <h1 style="font-size:1.8rem">${esc(g.name)} <span class="gtag">[${esc(g.tag)}]</span></h1>
+          <p class="sub" style="margin:4px 0 0">Niveau ${g.level} · ${nf(g.xp)} XP ·
+            ${g.count}/${g.max} membres · ${g.open ? "ouverte" : "sur invitation"}</p>
+          <div class="xpbar"><i style="width:${pct}%"></i></div>
+          <p class="note" style="margin-top:5px">${g.next_xp
+            ? `${nf(g.next_xp - g.xp)} XP avant le niveau ${g.level + 1}` : "Niveau maximum atteint."}</p>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn" id="browseGuilds">Autres guildes</button>
+          ${staff ? `<button class="btn" id="gSettings">Réglages</button>` : ""}
+          ${chief ? `<button class="btn danger" id="gDisband">Dissoudre</button>`
+                  : `<button class="btn danger" id="gLeave">Quitter</button>`}
+        </div>
+      </div>
+      ${g.motd ? `<p style="margin:14px 0 0">${esc(g.motd)}</p>` : ""}
+    </div>
+
+    <div class="grid-2" style="margin-top:16px">
+      <div class="panel">
+        <h2>Avantages</h2><p class="sub">Acquis à tous les membres, et perdus en quittant la guilde.</p>
+        <div class="perks">
+          <div class="perk"><b>+${g.coin_bonus} %</b>pièces à chaque pack ouvert</div>
+          <div class="perk"><b>+${g.ticket_bonus}</b>packs de réserve en plus</div>
+          <div class="perk"><b>+1 XP</b>par pack ouvert par un membre</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Trésor</h2><p class="sub">${nf(g.rate)} 🪙 versées = 1 XP quand un gradé investit.</p>
+        <div class="stats" style="margin-bottom:12px">
+          <div class="stat"><b style="color:var(--gold)">${nf(g.coins)}</b><span>pièces au trésor</span></div>
+          <div class="stat"><b>${nf(Math.floor(g.coins / g.rate))}</b><span>XP finançables</span></div>
+        </div>
+        <div class="row" style="flex-wrap:nowrap">
+          <input type="number" id="gAmount" min="1" value="100" step="50">
+          <button class="btn primary" id="gDonate">Verser</button>
+          ${staff ? `<button class="btn" id="gInvest">Investir</button>` : ""}
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Membres (${g.count})</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Joueur</th><th>Rôle</th><th class="num">Versé</th><th class="num">Packs</th>
+          <th class="num">Cartes</th><th>Depuis</th>${staff ? "<th></th>" : ""}</tr></thead>
+        <tbody>${g.members.map(m => `<tr>
+          <td><span class="avatar xs" style="display:inline-grid;vertical-align:middle">${esc(m.avatar)}</span>
+            <b>${esc(m.username)}</b></td>
+          <td><span class="role ${esc(m.role)}">${esc(m.role)}</span></td>
+          <td class="num">${nf(m.given)} 🪙</td><td class="num">${nf(m.packs)}</td>
+          <td class="num">${nf(m.unique)}</td><td>${dateOf(m.joined)}</td>
+          ${staff ? `<td>${m.name === me ? "" : `
+            ${chief ? `<button class="btn small" data-role="${esc(m.name)}">Rôle</button>` : ""}
+            ${m.role !== "chef" ? `<button class="btn small danger" data-kick="${esc(m.name)}">Exclure</button>` : ""}`}</td>` : ""}
+        </tr>`).join("")}</tbody></table></div>
+    </div>`;
+
+  $("#browseGuilds").onclick = () => { guildBrowse = true; loadGuild(); };
+  const amount = () => Math.max(1, Number($("#gAmount").value) || 0);
+  $("#gDonate").onclick = async () => {
+    try {
+      const d = await api("/api/guild/donate", {amount: amount()});
+      if (ME) { ME.coins = d.coins; renderWallet(); }
+      toast("Merci pour la guilde !", "good"); loadGuild();
+    } catch (e) { fail(e); }
+  };
+  if ($("#gInvest")) $("#gInvest").onclick = async () => {
+    try { await api("/api/guild/invest", {amount: amount()}); toast("Trésor investi.", "good"); loadGuild(); }
+    catch (e) { fail(e); }
+  };
+  if ($("#gLeave")) $("#gLeave").onclick = () => confirmDialog(
+    "Quitter la guilde", "Tu perdras ses avantages. Les pièces versées ne sont pas rendues.",
+    async () => { await api("/api/guild/leave", {}); toast("Tu as quitté la guilde.", "good"); loadGuild(); loadMe(); });
+  if ($("#gDisband")) $("#gDisband").onclick = () => confirmDialog(
+    "Dissoudre la guilde", `« ${g.name} » disparaîtra pour ses ${g.count} membres, trésor compris. C'est définitif.`,
+    async () => { await api("/api/guild/disband", {}); toast("Guilde dissoute.", "good"); loadGuild(); loadMe(); });
+  if ($("#gSettings")) $("#gSettings").onclick = () => guildSettingsDialog(g);
+  $$("#guildBody [data-kick]").forEach(b => b.onclick = () => confirmDialog(
+    "Exclure " + b.dataset.kick, "Ce joueur quittera la guilde immédiatement.",
+    async () => { await api("/api/guild/kick", {name: b.dataset.kick}); toast("Membre exclu."); loadGuild(); }));
+  $$("#guildBody [data-role]").forEach(b => b.onclick = () => roleDialog(b.dataset.role));
+}
+
+function guildSettingsDialog(g) {
+  let emblem = g.emblem;
+  modal({
+    title: "Réglages de la guilde",
+    body: `<label class="field">Message aux membres
+        <textarea id="gMotd" maxlength="200" placeholder="On vise le niveau 5 ce mois-ci !">${esc(g.motd)}</textarea></label>
+      <label class="field">Emblème
+        <div class="avatars" id="gEm2">${META.emblems.map(e =>
+          `<button type="button" data-e="${esc(e)}" aria-pressed="${e === g.emblem}">${esc(e)}</button>`).join("")}</div></label>
+      <label class="chip" style="display:flex;align-items:center;gap:8px;cursor:pointer;width:fit-content">
+        <input type="checkbox" id="gOpen" style="width:auto" ${g.open ? "checked" : ""}> Ouverte à tous
+      </label>
+      <p class="note">Fermée, la guilde n'apparaît plus avec un bouton « Rejoindre ».</p>`,
+    onOpen: () => $$("#gEm2 button").forEach(b => b.onclick = () => {
+      emblem = b.dataset.e;
+      $$("#gEm2 button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    }),
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Enregistrer", cls:"primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/guild/settings", {motd:$("#gMotd").value, emblem, open:$("#gOpen").checked});
+          d.close(); toast("Réglages enregistrés.", "good"); loadGuild();
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+function roleDialog(name) {
+  modal({
+    title: "Rôle de " + name,
+    body: `<label class="field">Nouveau rôle
+        <select id="gRole"><option value="membre">Membre</option><option value="officier">Officier</option>
+          <option value="chef">Chef (passation)</option></select>
+        <span class="hint">Un officier peut recruter, exclure des membres et investir le trésor.
+          Nommer un chef te fait redevenir officier.</span></label>`,
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Appliquer", cls:"primary", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try {
+          await api("/api/guild/role", {name, role:$("#gRole").value});
+          d.close(); toast("Rôle mis à jour.", "good"); loadGuild();
+        } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
+function confirmDialog(title, text, action) {
+  modal({
+    title, body: `<p class="note">${esc(text)}</p>`,
+    buttons: [
+      {label:"Annuler", onClick: d => d.close()},
+      {label:"Confirmer", cls:"primary danger", onClick: async (d, btn) => {
+        btn.disabled = true;
+        try { await action(); d.close(); } catch (e) { btn.disabled = false; fail(e); }
+      }},
+    ],
+  });
+}
+
 /* ================= PROFIL ================= */
 let leaderTab = "cards";
 async function loadProfile(name) {
@@ -641,6 +988,7 @@ async function loadAdmin() {
     else if (adminTab === "settings") { adminData.o = await api("/api/admin/overview"); adminSettings(); }
     else if (adminTab === "sources") { adminData.s = await api("/api/admin/sources"); adminSources(); }
     else if (adminTab === "auctions") { adminData.a = await api("/api/admin/auctions"); adminAuctions(); }
+    else if (adminTab === "guilds") { adminData.g = await api("/api/admin/guilds"); adminGuilds(); }
   } catch (e) { fail(e); }
 }
 
@@ -657,6 +1005,7 @@ function adminOverview() {
         <div class="stat"><b style="color:var(--gold)">${nf(o.coins)}</b><span>pièces en circulation</span></div>
         <div class="stat"><b>${nf(o.escrow)}</b><span>pièces bloquées</span></div>
         <div class="stat"><b>${nf(o.live_auctions)}</b><span>enchères en cours</span></div>
+        <div class="stat"><b>${nf(o.guilds)}</b><span>guildes</span></div>
         <div class="stat"><b>${nf(o.channels)}</b><span>chaînes suivies</span></div>
       </div>
     </div>
@@ -788,6 +1137,11 @@ const SETTING_LABELS = {
   anti_snipe: ["Prolongation anti-snipe", "secondes"],
   max_listings: ["Ventes simultanées par joueur", "ventes"],
   signups: ["Inscriptions ouvertes", "1 = oui, 0 = non"],
+  bot_check: ["Vérification anti-robot", "packs entre deux contrôles, 0 désactive"],
+  guild_cost: ["Coût de fondation d'une guilde", "pièces"],
+  guild_max: ["Membres par guilde", "membres"],
+  guild_rate: ["Pièces du trésor pour 1 XP", "pièces"],
+  guild_bonus: ["Bonus de pièces par niveau de guilde", "% par niveau"],
 };
 function adminSettings() {
   const s = adminData.o.settings;
@@ -870,6 +1224,28 @@ function adminAuctions() {
   tickCountdowns();
 }
 
+function adminGuilds() {
+  const rows = adminData.g.guilds;
+  $("#adminBody").innerHTML = `
+    <div class="panel">
+      <h2>Guildes (${rows.length})</h2>
+      <p class="sub">Dissoudre libère tous les membres et efface le trésor. Le nom redevient disponible.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Guilde</th><th>Chef</th><th class="num">Niveau</th><th class="num">XP</th>
+          <th class="num">Membres</th><th class="num">Trésor</th><th>Fondée</th><th></th></tr></thead>
+        <tbody>${rows.map(g => `<tr>
+          <td><span class="emblem sm" style="display:inline-grid;vertical-align:middle;width:26px;height:26px;font-size:.9rem">${esc(g.emblem)}</span>
+            <b>${esc(g.name)}</b> <span class="gtag">[${esc(g.tag)}]</span></td>
+          <td>${esc(g.owner)}</td><td class="num">${g.level}</td><td class="num">${nf(g.xp)}</td>
+          <td class="num">${g.count}</td><td class="num">${nf(g.coins)} 🪙</td><td>${dateOf(g.created)}</td>
+          <td><button class="btn small danger" data-gd="${esc(g.id)}">Dissoudre</button></td></tr>`).join("")
+          || `<tr><td colspan="8" class="empty">Aucune guilde.</td></tr>`}</tbody></table></div>
+    </div>`;
+  $$("#adminBody [data-gd]").forEach(b => b.onclick = () => confirmDialog(
+    "Dissoudre la guilde", "Action définitive : les membres sont libérés et le trésor disparaît.",
+    async () => { await api("/api/admin/guild/disband", {id: b.dataset.gd}); toast("Guilde dissoute."); loadAdmin(); }));
+}
+
 /* ================= Démarrage ================= */
 async function loadMeta() {
   try {
@@ -878,6 +1254,7 @@ async function loadMeta() {
     $("#heroInterval").textContent = clock(META.pack_interval);
     $("#heroMax").textContent = META.pack_max;
     $("#packPrice").textContent = nf(META.pack_price);
+    if (META.kofi) $$("a[href*='ko-fi.com']").forEach(a => { a.href = META.kofi; });
     $("#poolInfo").textContent = nf(META.videos) + " vidéos au total · " + nf(META.players) + " joueurs";
     $("#crawlInfo").textContent = META.last_crawl
       ? "Dernière recherche de vidéos par le worker : " + ago(Number(META.last_crawl))
@@ -893,7 +1270,9 @@ async function loadMeta() {
   await loadMeta();
   await loadMe();
   let start = "packs";
-  try { const v = localStorage.getItem("tp:view"); if (v && LOADERS[v] && (v !== "admin" || (ME && ME.admin))) start = v; } catch (e) {}
+  const asked = new URLSearchParams(location.search).get("vue");   // raccourcis de l'app installée
+  if (asked && LOADERS[asked]) start = asked;
+  else { try { const v = localStorage.getItem("tp:view"); if (v && LOADERS[v] && (v !== "admin" || (ME && ME.admin))) start = v; } catch (e) {} }
   go(start);
   setInterval(loadMeta, 60000);
   setInterval(() => { loadMe(); if (view === "market") loadMarket(); }, 30000);

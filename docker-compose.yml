@@ -11,6 +11,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-1}
       MIN_VIEWS: ${MIN_VIEWS:-10000}
       ADMIN_USERS: ${ADMIN_USERS:-EIRBLAST}
+      KOFI_URL: ${KOFI_URL:-https://ko-fi.com/eirblast}
     depends_on:
       redis:
         condition: service_healthy

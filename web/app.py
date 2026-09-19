@@ -19,6 +19,7 @@ Stockage Redis
 """
 import asyncio
 import hashlib
+import unicodedata
 import json
 import logging
 import os
@@ -67,6 +68,11 @@ DEFAULTS = {
     "anti_snipe": 60,       # une mise dans les N dernières secondes prolonge d'autant
     "max_listings": 10,     # ventes simultanées par joueur
     "signups": 1,           # 0 ferme les inscriptions
+    "bot_check": 60,        # packs entre deux vérifications anti-robot (0 désactive)
+    "guild_cost": 1000,     # pièces pour fonder une guilde
+    "guild_max": 20,        # membres par guilde
+    "guild_rate": 10,       # pièces du trésor pour 1 point d'expérience
+    "guild_bonus": 3,       # % de pièces en plus par niveau de guilde
 }
 
 # (clé, nom, vues min, poids de tirage en %, valeur de recyclage en pièces)
@@ -81,6 +87,20 @@ TIERS = [
 TIER_VALUE = {k: v for k, _, _, _, v in TIERS}
 DURATIONS = {"15m": 900, "1h": 3600, "6h": 21600, "24h": 86400}
 AVATARS = ["🎴", "🍿", "🎬", "🎧", "🕹️", "🚀", "🦊", "🐙", "🐧", "🦉", "🌵", "🍉", "⚡", "🔮", "🎯", "👑"]
+EMBLEMS = ["🛡️", "⚔️", "🏆", "🔥", "🌊", "🌙", "☄️", "🐉", "🦅", "🐺", "🍀", "💎", "🎪", "🧭", "⚓", "🎻"]
+KOFI = os.environ.get("KOFI_URL", "https://ko-fi.com/eirblast")
+GUILD_MAX_LEVEL = 20
+GUILD_NAME_RE = re.compile(r"^[\w \-'À-ÿ]{3,24}$", re.UNICODE)
+GUILD_TAG_RE = re.compile(r"^[A-Za-z0-9]{2,5}$")
+
+
+def guild_level(xp):
+    """Niveau atteint et expérience du palier suivant (paliers : 25·n·(n+1))."""
+    lvl = 0
+    while lvl < GUILD_MAX_LEVEL and xp >= 25 * (lvl + 1) * (lvl + 2):
+        lvl += 1
+    nxt = None if lvl >= GUILD_MAX_LEVEL else 25 * (lvl + 1) * (lvl + 2)
+    return lvl, nxt
 
 r = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
 ph = PasswordHasher()
@@ -95,6 +115,13 @@ sc_bid = r.register_script(lua.BID)
 sc_settle = r.register_script(lua.SETTLE)
 sc_cancel = r.register_script(lua.CANCEL)
 sc_adjust = r.register_script(lua.ADJUST)
+sc_gcreate = r.register_script(lua.GUILD_CREATE)
+sc_gjoin = r.register_script(lua.GUILD_JOIN)
+sc_gleave = r.register_script(lua.GUILD_LEAVE)
+sc_gdonate = r.register_script(lua.GUILD_DONATE)
+sc_ginvest = r.register_script(lua.GUILD_INVEST)
+sc_gdisband = r.register_script(lua.GUILD_DISBAND)
+sc_gxp = r.register_script(lua.GUILD_XP)
 
 
 @asynccontextmanager
@@ -248,14 +275,30 @@ async def notify(user, kind, text):
     await pipe.execute()
 
 
-async def wallet(user, cfg=None):
-    """Crédite les tickets dus et renvoie (pièces, tickets, secondes avant le prochain)."""
+async def guild_perks(user, cfg=None):
+    """(id de guilde, niveau, % de pièces en plus, réserve de packs en plus)."""
+    gid = await r.hget(f"user:{user}", "guild")
+    if not gid:
+        return None, 0, 0, 0
+    xp = await r.hget(f"guild:{gid}", "xp")
+    if xp is None:                      # guilde dissoute entre-temps
+        await r.hdel(f"user:{user}", "guild")
+        return None, 0, 0, 0
     cfg = cfg or await settings()
-    tickets, at = await sc_accrue(keys=[f"user:{user}"], args=[int(time.time()), cfg["pack_interval"], cfg["pack_max"]])
+    level, _ = guild_level(int(xp or 0))
+    return gid, level, level * cfg["guild_bonus"], level // 4
+
+
+async def wallet(user, cfg=None):
+    """Crédite les tickets dus et renvoie (pièces, tickets, secondes avant le prochain, réserve)."""
+    cfg = cfg or await settings()
+    _, _, _, extra = await guild_perks(user, cfg)
+    cap = cfg["pack_max"] + extra
+    tickets, at = await sc_accrue(keys=[f"user:{user}"], args=[int(time.time()), cfg["pack_interval"], cap])
     tickets, at = int(tickets), int(at)
-    left = 0 if tickets >= cfg["pack_max"] else max(0, int(at) + cfg["pack_interval"] - int(time.time()))
+    left = 0 if tickets >= cap else max(0, int(at) + cfg["pack_interval"] - int(time.time()))
     coins = int(await r.hget(f"user:{user}", "coins") or 0)
-    return coins, tickets, left
+    return coins, tickets, left, cap
 
 
 # ---------- Clôture automatique des enchères ----------
@@ -306,6 +349,76 @@ async def settler_loop():
         await asyncio.sleep(5)
 
 
+# ---------- Vérification anti-robot ----------
+# Un ralentisseur, pas un captcha : de quoi décourager un script qui ouvrirait des comptes
+# ou des packs en boucle, sans imposer un service tiers aux joueurs.
+WORDS = ["carte", "pack", "vidéo", "chaîne", "enchère", "guilde", "pièce", "rareté"]
+
+
+def fold(text):
+    """Minuscules sans accent : « É » et « e » valent la même réponse, et compare_digest
+    refuse de toute façon les chaînes non ASCII."""
+    stripped = unicodedata.normalize("NFD", text.strip().lower())
+    return "".join(c for c in stripped if not unicodedata.combining(c))
+
+
+def new_challenge():
+    kind = random.choice(("somme", "lettre", "compte"))
+    if kind == "somme":
+        a, b = random.randint(2, 9), random.randint(2, 9)
+        return f"Combien font {a} + {b} ? (en chiffres)", str(a + b)
+    if kind == "lettre":
+        w = random.choice(WORDS)
+        i = random.randint(1, min(4, len(w)))
+        rank = {1: "1re", 2: "2e", 3: "3e", 4: "4e"}[i]
+        return f"Quelle est la {rank} lettre du mot « {w} » ?", w[i - 1]
+    w = random.choice(WORDS)
+    letter = random.choice(sorted(set(w)))
+    return f"Combien de fois la lettre « {letter} » apparaît-elle dans « {w} » ?", str(w.count(letter))
+
+
+@app.get("/api/challenge")
+async def challenge(request: Request):
+    await rate_limit(f"rl:chal:{client_ip(request)}", 60, 600)
+    question, answer = new_challenge()
+    cid = secrets.token_urlsafe(12)
+    await r.set(f"chal:{cid}", fold(answer), ex=600)
+    return {"id": cid, "question": question}
+
+
+async def solve(cid: str, answer: str) -> bool:
+    if not cid or not answer:
+        return False
+    expected = await r.get(f"chal:{cid}")
+    if expected is None:
+        return False
+    await r.delete(f"chal:{cid}")          # à usage unique
+    return secrets.compare_digest(expected, fold(answer))
+
+
+class ChallengeAnswer(BaseModel):
+    id: str = ""
+    answer: str = ""
+
+
+@app.post("/api/verify", dependencies=[Depends(require_json)])
+async def verify(body: ChallengeAnswer, request: Request, user=Depends(current_user)):
+    await rate_limit(f"rl:verify:{client_ip(request)}", 30, 600)
+    if not await solve(body.id, body.answer):
+        raise HTTPException(400, "Mauvaise réponse, réessaie.")
+    packs = int(await r.hget(f"user:{user}", "packs") or 0)
+    await r.hset(f"user:{user}", "checked", packs)
+    return {"ok": True}
+
+
+async def bot_check_due(user, cfg) -> bool:
+    """Vrai s'il faut revérifier avant d'ouvrir un pack."""
+    if not cfg["bot_check"]:
+        return False
+    u = await r.hmget(f"user:{user}", "packs", "checked")
+    return int(u[0] or 0) - int(u[1] or 0) >= cfg["bot_check"]
+
+
 # ---------- Pages ----------
 @app.get("/")
 async def index(user=Depends(optional_user)):
@@ -321,6 +434,19 @@ async def login_page(user=Depends(optional_user)):
     return FileResponse(STATIC / "login.html")
 
 
+@app.get("/sw.js")
+async def service_worker():
+    # Servi depuis la racine : un service worker ne pilote que son propre dossier et
+    # ceux du dessous. Depuis /static/ il ne verrait jamais les pages de l'app.
+    return FileResponse(STATIC / "sw.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/manifest.webmanifest")
+async def manifest():
+    return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
+
+
 @app.get("/healthz")
 async def healthz():
     await r.ping()
@@ -332,6 +458,8 @@ class Credentials(BaseModel):
     username: str
     password: str
     invite: str = ""
+    challenge: str = ""
+    answer: str = ""
 
 
 @app.post("/api/register", dependencies=[Depends(require_json)])
@@ -340,6 +468,8 @@ async def register(body: Credentials, request: Request, response: Response):
     cfg = await settings()
     if not cfg["signups"]:
         raise HTTPException(403, "Les inscriptions sont fermées pour le moment.")
+    if cfg["bot_check"] and not await solve(body.challenge, body.answer):
+        raise HTTPException(400, "Vérification anti-robot incorrecte.")
     code = await invite_code()
     if code and not secrets.compare_digest(body.invite, code):
         raise HTTPException(403, "Code d'invitation incorrect.")
@@ -355,7 +485,7 @@ async def register(body: Credentials, request: Request, response: Response):
     await r.hset(f"user:{name}", mapping={
         "display": body.username, "created": now, "packs": 0,
         "coins": cfg["start_coins"], "tickets": cfg["start_tickets"], "ticket_at": now,
-        "avatar": random.choice(AVATARS), "bio": "",
+        "avatar": random.choice(AVATARS), "bio": "", "checked": 0,
     })
     await r.sadd("users", name)
     await notify(name, "hello", f"Bienvenue ! {cfg['start_coins']} pièces et {cfg['start_tickets']} packs pour démarrer.")
@@ -427,9 +557,12 @@ async def meta():
         "pack_interval": cfg["pack_interval"], "pack_max": cfg["pack_max"],
         "pack_price": cfg["pack_price"], "pack_bonus": cfg["pack_bonus"],
         "fee": cfg["fee"], "bid_step": cfg["bid_step"], "anti_snipe": cfg["anti_snipe"],
-        "max_listings": cfg["max_listings"],
+        "max_listings": cfg["max_listings"], "bot_check": cfg["bot_check"],
+        "guild_cost": cfg["guild_cost"], "guild_max": cfg["guild_max"],
+        "guild_rate": cfg["guild_rate"], "guild_bonus": cfg["guild_bonus"],
+        "guild_max_level": GUILD_MAX_LEVEL, "kofi": KOFI,
         "durations": list(DURATIONS),
-        "avatars": AVATARS,
+        "avatars": AVATARS, "emblems": EMBLEMS,
         "tiers": [{"key": k, "name": n, "min": m, "weight": w, "value": v} for k, n, m, w, v in TIERS],
     }
 
@@ -438,12 +571,17 @@ async def meta():
 async def me(user=Depends(current_user)):
     cfg = await settings()
     u = await r.hgetall(f"user:{user}")
-    coins, tickets, left = await wallet(user, cfg)
+    coins, tickets, left, cap = await wallet(user, cfg)
+    gid, level, pct, _ = await guild_perks(user, cfg)
+    guild = None
+    if gid:
+        g = await r.hmget(f"guild:{gid}", "name", "tag", "emblem")
+        guild = {"id": gid, "name": g[0], "tag": g[1], "emblem": g[2], "level": level, "bonus": pct}
     return {
         "name": user, "username": u.get("display", user), "avatar": u.get("avatar") or "🎴",
         "bio": u.get("bio", ""), "created": int(u.get("created", 0) or 0),
         "packs": int(u.get("packs", 0) or 0), "unique": await r.hlen(f"coll:{user}"),
-        "coins": coins, "tickets": tickets, "next_pack": left,
+        "coins": coins, "tickets": tickets, "next_pack": left, "pack_max": cap, "guild": guild,
         "admin": bool(await r.sismember("admins", user)),
         "listings": await r.scard(f"seller:{user}"),
         "notifs": await r.llen(f"notif:{user}"),
@@ -456,6 +594,8 @@ async def open_pack(user=Depends(current_user)):
     if not await r.set(f"rl:pack:{user}", 1, px=700, nx=True):
         raise HTTPException(429, "Doucement, un pack à la fois.")
     cfg = await settings()
+    if await bot_check_due(user, cfg):
+        raise HTTPException(428, "Petite vérification avant de continuer.")
 
     avail = []
     for k, name, lo, hi, w in TIER_RANGES:
@@ -465,7 +605,9 @@ async def open_pack(user=Depends(current_user)):
     if not avail:
         raise HTTPException(404, "Aucune vidéo ne correspond à ce seuil pour l'instant.")
 
-    spent = await sc_spend(keys=[f"user:{user}"], args=[cfg["pack_bonus"]])
+    gid, level, pct, _ = await guild_perks(user, cfg)
+    bonus = round(cfg["pack_bonus"] * (1 + pct / 100))
+    spent = await sc_spend(keys=[f"user:{user}"], args=[bonus])
     if spent[0] == "EMPTY":
         raise HTTPException(409, "Plus de pack disponible : attends le prochain ou achète-en un.")
 
@@ -495,9 +637,12 @@ async def open_pack(user=Depends(current_user)):
         cards.append(c)
         pipe.hincrby(f"coll:{user}", vid, 1)
     await pipe.execute()
+    if gid:
+        await sc_gxp(keys=[f"guild:{gid}"], args=[gid, 1])
     cards.sort(key=lambda c: c["views"])
-    coins, tickets, left = await wallet(user, cfg)
-    return {"cards": cards, "coins": coins, "tickets": tickets, "next_pack": left, "bonus": cfg["pack_bonus"]}
+    coins, tickets, left, cap = await wallet(user, cfg)
+    return {"cards": cards, "coins": coins, "tickets": tickets, "next_pack": left,
+            "pack_max": cap, "bonus": bonus, "guild_bonus": pct}
 
 
 @app.post("/api/packs/buy", dependencies=[Depends(require_json)])
@@ -506,8 +651,8 @@ async def buy_pack(user=Depends(current_user)):
     res = await sc_buy(keys=[f"user:{user}"], args=[cfg["pack_price"], int(time.time())])
     if res[0] == "FUNDS":
         raise HTTPException(402, f"Il te faut {cfg['pack_price']} pièces pour acheter un pack.")
-    coins, tickets, left = await wallet(user, cfg)
-    return {"coins": coins, "tickets": tickets, "next_pack": left}
+    coins, tickets, left, cap = await wallet(user, cfg)
+    return {"coins": coins, "tickets": tickets, "next_pack": left, "pack_max": cap}
 
 
 # ---------- Collection ----------
@@ -784,6 +929,281 @@ async def clear_notifications(user=Depends(current_user)):
     return {"ok": True}
 
 
+# ---------- Guildes ----------
+ROLES = ("chef", "officier", "membre")
+
+
+async def guild_view(gid, viewer=None):
+    g = await r.hgetall(f"guild:{gid}")
+    if not g:
+        raise HTTPException(404, "Guilde inconnue.")
+    cfg = await settings()
+    roles = await r.hgetall(f"guild:{gid}:members")
+    joined = await r.hgetall(f"guild:{gid}:joined")
+    given = await r.hgetall(f"guild:{gid}:given")
+    names = sorted(roles, key=lambda n: (ROLES.index(roles[n]) if roles[n] in ROLES else 9, n))
+    pipe = r.pipeline()
+    for n in names:
+        pipe.hmget(f"user:{n}", "display", "avatar", "packs")
+        pipe.hlen(f"coll:{n}")
+    res = await pipe.execute()
+    members = []
+    for i, n in enumerate(names):
+        display, avatar, packs = res[2 * i]
+        members.append({"name": n, "username": display or n, "avatar": avatar or "🎴",
+                        "role": roles[n], "joined": int(joined.get(n, 0) or 0),
+                        "given": int(given.get(n, 0) or 0), "packs": int(packs or 0),
+                        "unique": res[2 * i + 1]})
+    xp = int(g.get("xp", 0) or 0)
+    level, nxt = guild_level(xp)
+    mine = next((m for m in members if m["name"] == viewer), None)
+    return {
+        "id": gid, "name": g.get("name", ""), "tag": g.get("tag", ""),
+        "emblem": g.get("emblem") or "🛡️", "motd": g.get("motd", ""),
+        "open": g.get("open") == "1", "owner": g.get("owner", ""),
+        "created": int(g.get("created", 0) or 0), "coins": int(g.get("coins", 0) or 0),
+        "xp": xp, "level": level, "next_xp": nxt, "prev_xp": 25 * level * (level + 1),
+        "members": members, "count": len(members), "max": cfg["guild_max"],
+        "coin_bonus": level * cfg["guild_bonus"], "ticket_bonus": level // 4,
+        "rate": cfg["guild_rate"], "my_role": mine["role"] if mine else None,
+    }
+
+
+async def my_guild_id(user):
+    gid = await r.hget(f"user:{user}", "guild")
+    if not gid:
+        return None
+    if not await r.exists(f"guild:{gid}"):
+        await r.hdel(f"user:{user}", "guild")   # guilde dissoute
+        return None
+    return gid
+
+
+async def require_role(user, *allowed):
+    """Renvoie (id de guilde, rôle) si le joueur a l'un des rôles demandés."""
+    gid = await my_guild_id(user)
+    if not gid:
+        raise HTTPException(404, "Tu n'es dans aucune guilde.")
+    role = await r.hget(f"guild:{gid}:members", user)
+    if role not in allowed:
+        raise HTTPException(403, "Ton rôle ne permet pas cette action.")
+    return gid, role
+
+
+@app.get("/api/guilds")
+async def guilds(q: str = "", user=Depends(current_user)):
+    ids = await r.zrevrange("guilds", 0, 199)
+    mine = await my_guild_id(user)
+    if not ids:
+        return {"items": [], "mine": mine}
+    pipe = r.pipeline()
+    for gid in ids:
+        pipe.hmget(f"guild:{gid}", "name", "tag", "emblem", "xp", "open", "motd")
+        pipe.hlen(f"guild:{gid}:members")
+    res = await pipe.execute()
+    cfg = await settings()
+    items = []
+    for i, gid in enumerate(ids):
+        name, tag, emblem, xp, is_open, motd = res[2 * i]
+        if not name:
+            continue
+        if q and q.lower() not in name.lower() and q.lower() not in (tag or "").lower():
+            continue
+        level, _ = guild_level(int(xp or 0))
+        items.append({"id": gid, "name": name, "tag": tag or "", "emblem": emblem or "🛡️",
+                      "xp": int(xp or 0), "level": level, "open": is_open == "1",
+                      "motd": motd or "", "count": res[2 * i + 1], "max": cfg["guild_max"]})
+    return {"items": items, "mine": mine}
+
+
+@app.get("/api/guild")
+async def my_guild(user=Depends(current_user)):
+    gid = await my_guild_id(user)
+    return {"guild": await guild_view(gid, user) if gid else None}
+
+
+@app.get("/api/guild/{gid}")
+async def one_guild(gid: str, user=Depends(current_user)):
+    return {"guild": await guild_view(gid, user)}
+
+
+class GuildCreate(BaseModel):
+    name: str
+    tag: str
+    emblem: str = "🛡️"
+
+
+@app.post("/api/guild/create", dependencies=[Depends(require_json)])
+async def guild_create(body: GuildCreate, user=Depends(current_user)):
+    cfg = await settings()
+    name = " ".join(body.name.split())
+    tag = body.tag.strip().upper()
+    if not GUILD_NAME_RE.match(name):
+        raise HTTPException(400, "Nom : 3 à 24 caractères, lettres, chiffres, espaces ou tirets.")
+    if not GUILD_TAG_RE.match(tag):
+        raise HTTPException(400, "Tag : 2 à 5 lettres ou chiffres, sans accent.")
+    emblem = body.emblem if body.emblem in EMBLEMS else "🛡️"
+    gid = secrets.token_hex(6)
+    res = await sc_gcreate(keys=[f"user:{user}", f"guild:{gid}", f"guild:{gid}:members"],
+                           args=[gid, name, name.lower(), tag, cfg["guild_cost"], user,
+                                 int(time.time()), emblem])
+    code = res[0]
+    if code == "ALREADY":
+        raise HTTPException(409, "Quitte ta guilde avant d'en fonder une autre.")
+    if code == "TAKEN":
+        raise HTTPException(409, "Ce nom de guilde est déjà pris.")
+    if code == "FUNDS":
+        raise HTTPException(402, f"Fonder une guilde coûte {cfg['guild_cost']} pièces.")
+    return {"id": gid}
+
+
+class GuildRef(BaseModel):
+    id: str
+
+
+@app.post("/api/guild/join", dependencies=[Depends(require_json)])
+async def guild_join(body: GuildRef, user=Depends(current_user)):
+    cfg = await settings()
+    res = await sc_gjoin(keys=[f"user:{user}", f"guild:{body.id}", f"guild:{body.id}:members"],
+                         args=[body.id, user, int(time.time()), cfg["guild_max"]])
+    code = res[0]
+    if code == "ALREADY":
+        raise HTTPException(409, "Tu es déjà dans une guilde.")
+    if code == "GONE":
+        raise HTTPException(404, "Cette guilde n'existe plus.")
+    if code == "CLOSED":
+        raise HTTPException(403, "Cette guilde est fermée aux nouvelles recrues.")
+    if code == "FULL":
+        raise HTTPException(409, "Cette guilde est complète.")
+    name = await r.hget(f"guild:{body.id}", "name")
+    for m in await r.hkeys(f"guild:{body.id}:members"):
+        if m != user:
+            await notify(m, "guild", f"{user} rejoint la guilde {name}.")
+    return {"ok": True}
+
+
+@app.post("/api/guild/leave", dependencies=[Depends(require_json)])
+async def guild_leave(user=Depends(current_user)):
+    gid = await my_guild_id(user)
+    if not gid:
+        raise HTTPException(404, "Tu n'es dans aucune guilde.")
+    res = await sc_gleave(keys=[f"user:{user}", f"guild:{gid}", f"guild:{gid}:members"], args=[user])
+    if res[0] == "OWNER":
+        raise HTTPException(409, "Passe d'abord le rôle de chef à quelqu'un, ou dissous la guilde.")
+    return {"ok": True}
+
+
+class GuildMember(BaseModel):
+    name: str
+
+
+@app.post("/api/guild/kick", dependencies=[Depends(require_json)])
+async def guild_kick(body: GuildMember, user=Depends(current_user)):
+    gid, role = await require_role(user, "chef", "officier")
+    target = body.name.lower()
+    if target == user:
+        raise HTTPException(409, "Utilise « Quitter la guilde ».")
+    trole = await r.hget(f"guild:{gid}:members", target)
+    if not trole:
+        raise HTTPException(404, "Ce joueur n'est pas dans la guilde.")
+    if role == "officier" and trole != "membre":
+        raise HTTPException(403, "Un officier ne peut exclure que des membres.")
+    res = await sc_gleave(keys=[f"user:{target}", f"guild:{gid}", f"guild:{gid}:members"], args=[target])
+    if res[0] == "OWNER":
+        raise HTTPException(409, "On n'exclut pas le chef.")
+    name = await r.hget(f"guild:{gid}", "name")
+    await notify(target, "guild", f"Tu as été exclu de la guilde {name}.")
+    return {"ok": True}
+
+
+class GuildRole(BaseModel):
+    name: str
+    role: str
+
+
+@app.post("/api/guild/role", dependencies=[Depends(require_json)])
+async def guild_role(body: GuildRole, user=Depends(current_user)):
+    gid, _ = await require_role(user, "chef")
+    target = body.name.lower()
+    if body.role not in ROLES:
+        raise HTTPException(400, "Rôle inconnu.")
+    if not await r.hexists(f"guild:{gid}:members", target):
+        raise HTTPException(404, "Ce joueur n'est pas dans la guilde.")
+    if body.role == "chef":
+        # Passation : il n'y a qu'un chef, l'ancien redevient officier.
+        pipe = r.pipeline()
+        pipe.hset(f"guild:{gid}:members", target, "chef")
+        pipe.hset(f"guild:{gid}:members", user, "officier")
+        pipe.hset(f"guild:{gid}", "owner", target)
+        await pipe.execute()
+        await notify(target, "guild", "Tu es désormais chef de la guilde.")
+    elif target == user:
+        raise HTTPException(409, "Passe d'abord le rôle de chef à quelqu'un d'autre.")
+    else:
+        await r.hset(f"guild:{gid}:members", target, body.role)
+        await notify(target, "guild", f"Ton rôle dans la guilde est maintenant : {body.role}.")
+    return {"ok": True}
+
+
+class GuildAmount(BaseModel):
+    amount: int = Field(ge=1, le=10_000_000)
+
+
+@app.post("/api/guild/donate", dependencies=[Depends(require_json)])
+async def guild_donate(body: GuildAmount, user=Depends(current_user)):
+    gid = await my_guild_id(user)
+    if not gid:
+        raise HTTPException(404, "Tu n'es dans aucune guilde.")
+    res = await sc_gdonate(keys=[f"user:{user}", f"guild:{gid}", f"guild:{gid}:members"],
+                           args=[user, body.amount])
+    if res[0] == "FUNDS":
+        raise HTTPException(402, "Pièces insuffisantes.")
+    if res[0] == "NONE":
+        raise HTTPException(404, "Tu n'es pas membre de cette guilde.")
+    return {"treasury": int(res[1]), "coins": int(res[2])}
+
+
+@app.post("/api/guild/invest", dependencies=[Depends(require_json)])
+async def guild_invest(body: GuildAmount, user=Depends(current_user)):
+    gid, _ = await require_role(user, "chef", "officier")
+    cfg = await settings()
+    if body.amount < cfg["guild_rate"]:
+        raise HTTPException(400, f"Minimum {cfg['guild_rate']} pièces.")
+    res = await sc_ginvest(keys=[f"guild:{gid}"], args=[body.amount, cfg["guild_rate"]])
+    if res[0] == "FUNDS":
+        raise HTTPException(402, "Le trésor ne suffit pas.")
+    return {"treasury": int(res[1]), "xp": int(res[2])}
+
+
+class GuildSettings(BaseModel):
+    motd: str = ""
+    emblem: str = "🛡️"
+    open: bool = True
+
+
+@app.post("/api/guild/settings", dependencies=[Depends(require_json)])
+async def guild_settings(body: GuildSettings, user=Depends(current_user)):
+    gid, _ = await require_role(user, "chef", "officier")
+    await r.hset(f"guild:{gid}", mapping={
+        "motd": body.motd.strip()[:200],
+        "emblem": body.emblem if body.emblem in EMBLEMS else "🛡️",
+        "open": "1" if body.open else "0",
+    })
+    return {"ok": True}
+
+
+@app.post("/api/guild/disband", dependencies=[Depends(require_json)])
+async def guild_disband(user=Depends(current_user)):
+    gid, _ = await require_role(user, "chef")
+    name = await r.hget(f"guild:{gid}", "name")
+    members = await r.hkeys(f"guild:{gid}:members")
+    await sc_gdisband(keys=[f"guild:{gid}", f"guild:{gid}:members"], args=[gid])
+    for m in members:
+        if m != user:
+            await notify(m, "guild", f"La guilde {name} a été dissoute par son chef.")
+    return {"ok": True}
+
+
 # ---------- Administration ----------
 @app.get("/api/admin/overview", dependencies=[Depends(require_admin)])
 async def admin_overview():
@@ -804,6 +1224,7 @@ async def admin_overview():
         "videos": await r.zcard("videos:by_views"), "known": await r.zcard("videos:updated"),
         "sources": await r.zcard("sources"), "packs": packs, "coins": coins,
         "live_auctions": len(live), "escrow": escrow, "done_auctions": await r.zcard("auctions:done"),
+        "guilds": await r.zcard("guilds"),
         "heartbeat": await r.get("worker:heartbeat"), "worker_status": await r.get("worker:status"),
         "worker_stats": await r.hgetall("worker:stats"),
         "channels": await r.zcard("channels"), "queued": await r.scard("queue:related"),
@@ -922,7 +1343,9 @@ async def admin_settings(body: SettingsUpdate, admin=Depends(require_admin)):
         "pack_interval": (30, 86400), "pack_max": (1, 500), "pack_price": (0, 1_000_000),
         "pack_bonus": (0, 100_000), "start_coins": (0, 1_000_000), "start_tickets": (0, 500),
         "fee": (0, 50), "bid_step": (1, 100), "anti_snipe": (0, 3600),
-        "max_listings": (1, 200), "signups": (0, 1),
+        "max_listings": (1, 200), "signups": (0, 1), "bot_check": (0, 100000),
+        "guild_cost": (0, 1_000_000), "guild_max": (2, 200),
+        "guild_rate": (1, 10000), "guild_bonus": (0, 50),
     }
     update = {}
     for k, v in body.values.items():
@@ -964,6 +1387,40 @@ async def admin_cancel(body: AuctionRef, admin=Depends(require_admin)):
     if res[1]:
         await notify(res[1], "admin", f"Enchère annulée par un administrateur : {int(res[2])} pièces remboursées.")
     log.info("Admin %s : annulation de l'enchère %s", admin, body.id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/guilds")
+async def admin_guilds(user=Depends(require_admin)):
+    ids = await r.zrevrange("guilds", 0, 199)
+    pipe = r.pipeline()
+    for gid in ids:
+        pipe.hmget(f"guild:{gid}", "name", "tag", "emblem", "owner", "xp", "coins", "created")
+        pipe.hlen(f"guild:{gid}:members")
+    res = await pipe.execute()
+    out = []
+    for i, gid in enumerate(ids):
+        name, tag, emblem, owner, xp, coins, created = res[2 * i]
+        if not name:
+            continue
+        level, _ = guild_level(int(xp or 0))
+        out.append({"id": gid, "name": name, "tag": tag or "", "emblem": emblem or "🛡️",
+                    "owner": owner or "", "xp": int(xp or 0), "level": level,
+                    "coins": int(coins or 0), "created": int(created or 0),
+                    "count": res[2 * i + 1]})
+    return {"guilds": out}
+
+
+@app.post("/api/admin/guild/disband", dependencies=[Depends(require_json)])
+async def admin_guild_disband(body: GuildRef, admin=Depends(require_admin)):
+    name = await r.hget(f"guild:{body.id}", "name")
+    if not name:
+        raise HTTPException(404, "Guilde inconnue.")
+    members = await r.hkeys(f"guild:{body.id}:members")
+    await sc_gdisband(keys=[f"guild:{body.id}", f"guild:{body.id}:members"], args=[body.id])
+    for m in members:
+        await notify(m, "admin", f"La guilde {name} a été dissoute par un administrateur.")
+    log.info("Admin %s : dissolution de la guilde %s (%s)", admin, body.id, name)
     return {"ok": True}
 
 

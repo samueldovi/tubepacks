@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connexion · TubePacks</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎴</text></svg>">
+<meta name="theme-color" content="#14162F">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="TubePacks">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -42,10 +47,16 @@ form{width:100%;background:var(--panel);border:1px solid var(--line);border-radi
     <label class="field">Mot de passe<input name="password" type="password" autocomplete="current-password">
       <span class="hint" id="pwHint" hidden>8 caractères minimum.</span></label>
     <label class="field" id="inviteRow" hidden>Code d'invitation<input type="text" name="invite" autocomplete="off"></label>
+    <label class="field" id="botRow" hidden><span id="botQ">Vérification…</span>
+      <input type="text" name="answer" autocomplete="off" inputmode="text">
+      <span class="hint">Une question au hasard, pour écarter les scripts.</span></label>
     <p class="err" id="err" role="alert"></p>
     <button class="btn primary" id="go" style="padding:12px">Se connecter</button>
   </form>
   <div class="facts" id="facts"></div>
+  <a class="kofibtn" id="kofi" href="https://ko-fi.com/eirblast" target="_blank" rel="noopener">
+    <span aria-hidden="true">☕</span> Soutenir TubePacks
+  </a>
 </main>
 <script src="/static/login.js"></script>
 </body>

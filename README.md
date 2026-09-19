@@ -5,7 +5,8 @@ collection par joueur, hôtel des ventes entre joueurs, profils publics et conso
 Un worker alimente le jeu en continu (vidéos ≥ 10 000 vues) et rafraîchit vues et j'aime.
 
 ```
-web/        FastAPI : pages, comptes (Argon2), sessions Redis, packs, enchères, admin
+web/        FastAPI : pages, comptes (Argon2), sessions Redis, packs, enchères, guildes, admin
+web/static/ application installable (manifeste, service worker, icônes)
 web/lua.py  scripts Lua : pièces et cartes déplacées de façon atomique côté Redis
 worker/     moissonneuse : API Invidious / Piped, flux RSS des chaînes, yt-dlp en secours
 redis       données persistantes (AOF, volume redis-data)
@@ -36,6 +37,35 @@ redis       données persistantes (AOF, volume redis-data)
   prolonge l'enchère d'une minute (anti-snipe). Les enchères se clôturent toutes seules côté serveur.
 - **Profil** — avatar, bio, statistiques, progression par rareté, plus belles cartes, classements.
   Les profils des autres joueurs sont consultables depuis le classement.
+- **Guildes** — fonder une guilde coûte 1 000 pièces ; jusqu'à 20 membres, trois rôles
+  (chef, officier, membre). Chaque pack ouvert par un membre donne 1 XP à la guilde, et les
+  membres versent des pièces au trésor qu'un gradé convertit en XP (10 🪙 = 1 XP). Chaque niveau
+  rapporte **+3 % de pièces** à chaque ouverture de pack pour tous les membres, et **+1 pack de
+  réserve tous les 4 niveaux**. Les avantages sont perdus en quittant la guilde. Niveau maximum : 20
+  (paliers à 50, 150, 300, 500, 750… XP).
+
+## Application installable
+
+Le site est une PWA : sur mobile, « Ajouter à l'écran d'accueil » l'installe comme une application
+(plein écran, sans barre d'adresse, icône propre). Un bandeau le propose une fois, refusable
+définitivement ; sur iPhone il affiche la marche à suivre, faute de `beforeinstallprompt`.
+
+Le service worker est servi depuis la racine (`/sw.js`, en-tête `Service-Worker-Allowed: /`) : depuis
+`/static/` il ne piloterait pas les pages. Il met en cache la coquille de l'app (page, CSS, JS, icônes)
+et **jamais** `/api/` — un solde ou une enchère périmés ne doivent pas être servis. Hors ligne, une
+page dédiée s'affiche. Les raccourcis du manifeste ouvrent directement les packs, les enchères ou la guilde.
+
+Pour régénérer les icônes après un changement de logo, elles sont produites par script (Pillow) et
+commitées dans `web/static/` : `icon-192.png`, `icon-512.png`, `icon-maskable-512.png`,
+`apple-touch-icon.png`.
+
+## Vérification anti-robot
+
+Un ralentisseur, pas un captcha, et sans service tiers : le serveur pose une petite question en
+français (calcul, lettre d'un mot), stockée dans Redis avec une durée de vie et à usage unique.
+Elle est demandée **à l'inscription**, puis **tous les 60 packs** (réglable dans l'admin, `0` désactive) —
+le serveur répond alors `428` et l'app affiche la fenêtre, puis rejoue l'action. Les accents sont
+ignorés dans la comparaison : « é » et « e » valent la même réponse.
 
 ## Le worker
 
@@ -85,13 +115,15 @@ L'onglet **Admin** donne accès à :
   simultanées par joueur, ouverture des inscriptions, code d'invitation.
 - **Sources** : ajouter, retirer ou remettre en tête de file une source du worker.
 - **Enchères** : annuler une vente en cours (l'enchérisseur est remboursé, la carte rendue).
+- **Guildes** : liste, niveaux, trésor, dissolution (les membres sont libérés et prévenus).
 
 ## Déploiement sur Coolify
 
 1. Pousse ce dossier dans un dépôt Git (GitHub, GitLab, Gitea…).
 2. Coolify : New Resource → Application → ton dépôt → Build Pack **Docker Compose**, fichier `/docker-compose.yml`.
 3. Variables d'environnement (voir `.env.example`) : au minimum `REDIS_PASSWORD` (`openssl rand -hex 32`).
-   `ADMIN_USERS` pour les administrateurs, `INVITE_CODE` si tu veux limiter la création de comptes.
+   `ADMIN_USERS` pour les administrateurs, `INVITE_CODE` si tu veux limiter la création de comptes,
+   `KOFI_URL` pour le lien de soutien.
 4. Domaine : sur le service **web** uniquement, `https://ton-domaine.fr:8000`
    (le `:8000` indique à Coolify le port interne ; le site reste servi en 443 avec HTTPS automatique).
    Redis et le worker ne sont pas exposés.
@@ -117,8 +149,17 @@ et le premier à l'enregistrer récupère les droits d'administration.
 - **Rythme du worker** : voir `.env.example`, section worker. `CYCLE_PAUSE` règle l'ensemble.
 - **Réglages du jeu** : dans l'onglet Admin, pas en variables d'environnement (sauf `MIN_VIEWS`).
 - **Sauvegarde** : volume `redis-data` (fichier `appendonly`).
+- **HTTPS obligatoire** pour l'installation : un service worker ne s'enregistre qu'en HTTPS
+  (ou sur `localhost`). Coolify s'en occupe ; en test local en http, l'app reste utilisable
+  mais n'est pas installable.
+- **Nouvelle version qui ne s'affiche pas** : le service worker sert l'ancienne coquille jusqu'au
+  rechargement suivant. Changer `VERSION` dans `web/static/sw.js` force le renouvellement du cache.
 - **Mise à l'échelle** : le service web tient à une seule instance — la clôture des enchères y tourne
   en tâche de fond (protégée par un verrou Redis, donc plusieurs instances restent correctes).
+
+## Soutenir
+
+TubePacks est gratuit et sans publicité : <https://ko-fi.com/eirblast>
 
 ## Test en local
 

@@ -269,3 +269,61 @@ dialog .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
 }
+
+/* ---------- Ko-fi ---------- */
+.iconbtn.kofi{text-decoration:none;border-color:color-mix(in srgb,var(--gold) 45%,var(--line))}
+.iconbtn.kofi:hover{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 14%,var(--panel))}
+.pagefoot{max-width:1180px;margin:0 auto;padding:26px 16px 40px;text-align:center;border-top:1px solid var(--line)}
+.kofibtn{display:inline-flex;align-items:center;gap:8px;text-decoration:none;font-weight:700;
+  background:linear-gradient(135deg,#FF5E5B,#D9930B);color:#fff;border-radius:999px;padding:9px 20px;
+  box-shadow:0 10px 24px -14px #D9930B}
+.kofibtn:hover{filter:brightness(1.07)}
+.pagefoot .note{margin:10px auto 0}
+
+/* ---------- Bandeau d'installation ---------- */
+.banner{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;width:min(560px,calc(100vw - 24px));
+  display:flex;align-items:center;gap:13px;background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;padding:12px 14px;box-shadow:0 22px 50px -18px var(--shadow);animation:rise .3s}
+@keyframes rise{from{transform:translateX(-50%) translateY(16px);opacity:0}}
+.banner img{border-radius:11px;flex:none}
+.banner .btext{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;font-size:.87rem}
+.banner .btext b{font-family:var(--display);font-size:1rem}
+.banner .btext span{color:var(--muted)}
+.banner .bactions{display:flex;gap:7px;flex:none}
+@media (max-width:520px){
+  .banner{flex-wrap:wrap}
+  .banner .bactions{width:100%;justify-content:flex-end}
+}
+
+/* ---------- Anti-robot ---------- */
+.challenge{display:flex;flex-direction:column;gap:10px}
+.challenge .q{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;
+  font-family:var(--display);font-weight:800;font-size:1.1rem;text-align:center}
+.challenge .q.loading{color:var(--muted);font-weight:600;font-family:var(--body)}
+
+/* ---------- Guildes ---------- */
+.ghead{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.emblem{width:76px;height:76px;border-radius:22px;display:grid;place-items:center;font-size:2.3rem;flex:none;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--e) 32%,var(--panel2)),var(--panel2));
+  border:1px solid var(--line)}
+.emblem.sm{width:40px;height:40px;border-radius:13px;font-size:1.25rem}
+.gtag{font-family:var(--display);font-weight:800;color:var(--muted);font-size:.9rem}
+.lvl{display:inline-grid;place-items:center;min-width:30px;height:30px;padding:0 8px;border-radius:9px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-family:var(--display);
+  font-weight:800;font-size:.92rem}
+.xpbar{height:11px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:6px}
+.xpbar i{display:block;height:100%;background:linear-gradient(90deg,var(--e),var(--accent));border-radius:999px}
+.perks{display:flex;flex-wrap:wrap;gap:8px}
+.perk{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:8px 12px;font-size:.85rem}
+.perk b{display:block;font-family:var(--display);font-size:1.1rem;color:var(--good)}
+.glist{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:13px}
+.gcard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px;display:flex;
+  gap:12px;align-items:center;box-shadow:var(--shadow-lg)}
+.gcard.mine{border-color:var(--accent)}
+.gcard .gi{flex:1;min-width:0}
+.gcard .gn{font-weight:700;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.gcard .gm{color:var(--muted);font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.role{font-size:.68rem;font-weight:800;padding:2px 7px;border-radius:999px;background:var(--panel2);
+  border:1px solid var(--line);color:var(--muted)}
+.role.chef{color:var(--gold);border-color:color-mix(in srgb,var(--gold) 45%,var(--line))}
+.role.officier{color:var(--r);border-color:color-mix(in srgb,var(--r) 45%,var(--line))}

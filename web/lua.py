@@ -170,3 +170,104 @@ if new < 0 then new = 0 end
 redis.call('HSET', u, field, new)
 return {new}
 """
+
+# ---------- Guildes ----------
+# Fonde une guilde : nom réservé, pièces débitées, fondateur inscrit.
+# -> {'OK'} | {'FUNDS'} | {'TAKEN'} | {'ALREADY'}
+GUILD_CREATE = """
+local u, g, members = KEYS[1], KEYS[2], KEYS[3]
+local gid, name, key, tag, cost = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
+local owner, now, emblem = ARGV[6], ARGV[7], ARGV[8]
+if redis.call('HGET', u, 'guild') then return {'ALREADY'} end
+if redis.call('SETNX', 'guildname:' .. key, gid) == 0 then return {'TAKEN'} end
+if tonumber(redis.call('HGET', u, 'coins') or '0') < cost then
+  redis.call('DEL', 'guildname:' .. key)
+  return {'FUNDS'}
+end
+redis.call('HINCRBY', u, 'coins', -cost)
+redis.call('HSET', u, 'guild', gid)
+redis.call('HSET', g, 'id', gid, 'name', name, 'key', key, 'tag', tag, 'owner', owner,
+           'created', now, 'coins', 0, 'xp', 0, 'emblem', emblem, 'motd', '', 'open', 1)
+redis.call('HSET', members, owner, 'chef')
+redis.call('HSET', g .. ':joined', owner, now)
+redis.call('ZADD', 'guilds', 0, gid)
+return {'OK'}
+"""
+
+# Rejoint une guilde. -> {'OK', effectif} | {'ALREADY'} | {'GONE'} | {'FULL'} | {'CLOSED'}
+GUILD_JOIN = """
+local u, g, members = KEYS[1], KEYS[2], KEYS[3]
+local gid, who, now, maxm = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
+if redis.call('HGET', u, 'guild') then return {'ALREADY'} end
+if redis.call('EXISTS', g) == 0 then return {'GONE'} end
+if redis.call('HGET', g, 'open') ~= '1' then return {'CLOSED'} end
+local n = redis.call('HLEN', members)
+if n >= maxm then return {'FULL'} end
+redis.call('HSET', members, who, 'membre')
+redis.call('HSET', g .. ':joined', who, now)
+redis.call('HSET', u, 'guild', gid)
+return {'OK', n + 1}
+"""
+
+# Quitte ou exclut. Le chef doit d'abord passer la main. -> {'OK'} | {'OWNER'} | {'NONE'}
+GUILD_LEAVE = """
+local u, g, members = KEYS[1], KEYS[2], KEYS[3]
+local who = ARGV[1]
+if redis.call('HEXISTS', members, who) == 0 then return {'NONE'} end
+if redis.call('HGET', g, 'owner') == who then return {'OWNER'} end
+redis.call('HDEL', members, who)
+redis.call('HDEL', g .. ':joined', who)
+redis.call('HDEL', g .. ':given', who)
+redis.call('HDEL', u, 'guild')
+return {'OK'}
+"""
+
+# Verse des pièces au trésor. -> {'OK', tresor, solde} | {'FUNDS'} | {'NONE'}
+GUILD_DONATE = """
+local u, g, members = KEYS[1], KEYS[2], KEYS[3]
+local who, amount = ARGV[1], tonumber(ARGV[2])
+if redis.call('HEXISTS', members, who) == 0 then return {'NONE'} end
+if tonumber(redis.call('HGET', u, 'coins') or '0') < amount then return {'FUNDS'} end
+redis.call('HINCRBY', u, 'coins', -amount)
+local pot = redis.call('HINCRBY', g, 'coins', amount)
+redis.call('HINCRBY', g .. ':given', who, amount)
+return {'OK', pot, tonumber(redis.call('HGET', u, 'coins'))}
+"""
+
+# Convertit le trésor en expérience de guilde. -> {'OK', tresor, xp} | {'FUNDS'}
+GUILD_INVEST = """
+local g = KEYS[1]
+local amount, rate = tonumber(ARGV[1]), tonumber(ARGV[2])
+local pot = tonumber(redis.call('HGET', g, 'coins') or '0')
+if pot < amount then return {'FUNDS'} end
+redis.call('HINCRBY', g, 'coins', -amount)
+local xp = redis.call('HINCRBY', g, 'xp', math.floor(amount / rate))
+redis.call('ZADD', 'guilds', xp, redis.call('HGET', g, 'id'))
+return {'OK', pot - amount, xp}
+"""
+
+# Dissout la guilde : chaque membre est libéré, le nom est rendu. -> {'OK', nb}
+GUILD_DISBAND = """
+local g, members = KEYS[1], KEYS[2]
+local gid = ARGV[1]
+local names = redis.call('HKEYS', members)
+for _, who in ipairs(names) do
+  if redis.call('HGET', 'user:' .. who, 'guild') == gid then
+    redis.call('HDEL', 'user:' .. who, 'guild')
+  end
+end
+redis.call('DEL', 'guildname:' .. (redis.call('HGET', g, 'key') or ''))
+redis.call('DEL', members, g .. ':joined', g .. ':given', g)
+redis.call('ZREM', 'guilds', gid)
+return {'OK', #names}
+"""
+
+# Expérience gagnée par la guilde quand un membre ouvre un pack. -> {xp}
+GUILD_XP = """
+local g = KEYS[1]
+local gid, n = ARGV[1], tonumber(ARGV[2])
+if redis.call('EXISTS', g) == 0 then return {0} end
+local xp = redis.call('HINCRBY', g, 'xp', n)
+redis.call('ZADD', 'guilds', xp, gid)
+return {xp}
+"""
